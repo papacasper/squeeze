@@ -1,4 +1,4 @@
-package com.papacasper.discordcompressor
+package com.papacasper.squeeze
 
 /**
  * Median-cut color quantizer. Builds a palette of up to [maxColors] colors from an RGB byte

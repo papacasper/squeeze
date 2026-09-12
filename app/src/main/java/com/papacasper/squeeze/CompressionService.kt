@@ -1,4 +1,4 @@
-package com.papacasper.discordcompressor
+package com.papacasper.squeeze
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -207,7 +207,7 @@ class CompressionService : Service() {
         private const val CHANNEL_ID = "compression"
         private const val NOTIF_ID = 42
 
-        const val ACTION_CANCEL = "com.papacasper.discordcompressor.action.CANCEL"
+        const val ACTION_CANCEL = "com.papacasper.squeeze.action.CANCEL"
         private const val EXTRA_URI = "uri"
         private const val EXTRA_MIME = "mime"
         private const val EXTRA_ORIGINAL_BYTES = "original_bytes"

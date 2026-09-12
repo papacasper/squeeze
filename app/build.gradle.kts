@@ -12,15 +12,15 @@ val localProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.papacasper.discordcompressor"
+    namespace = "com.papacasper.squeeze"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.papacasper.discordcompressor"
+        applicationId = "com.papacasper.squeeze"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "2026.09.12c"
+        versionCode = 23
+        versionName = "2026.09.12d"
     }
 
     signingConfigs {

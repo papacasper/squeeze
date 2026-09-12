@@ -1,4 +1,4 @@
-package com.papacasper.discordcompressor
+package com.papacasper.squeeze
 
 import android.content.ContentResolver
 import android.graphics.Bitmap

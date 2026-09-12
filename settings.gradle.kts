@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "DiscordCompressor"
+rootProject.name = "Squeeze"
 include(":app")
