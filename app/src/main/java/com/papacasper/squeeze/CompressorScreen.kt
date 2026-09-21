@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -63,6 +64,7 @@ private sealed class UiState {
     ) : UiState()
     data class Done(val originalBytes: Long, val resultFile: File, val mime: String, val fitsTarget: Boolean, val targetLabel: String) : UiState()
     data class Failed(val message: String) : UiState()
+    data class Downloading(val message: String, val progress: Float) : UiState()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -78,6 +80,7 @@ fun CompressorScreen(initialUri: Uri? = null) {
     var videoDurationMs by remember { mutableStateOf(0L) }
     var trimStartMs by remember { mutableStateOf(0L) }
     var trimEndMs by remember { mutableStateOf(0L) }
+    var downloadUrl by remember { mutableStateOf("") }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -127,6 +130,19 @@ fun CompressorScreen(initialUri: Uri? = null) {
 
     LaunchedEffect(initialUri) {
         if (initialUri != null) selectFile(initialUri)
+    }
+
+    // Downloading runs in DownloadService (a foreground service), same pattern as compression.
+    // On success, the downloaded file drops straight into the normal file-selected/compress flow.
+    LaunchedEffect(Unit) {
+        DownloadRepository.state.collect { s ->
+            when (s) {
+                is DownloadState.Working -> state = UiState.Downloading(s.message, s.progress)
+                is DownloadState.Done -> selectFile(s.uri)
+                is DownloadState.Failed -> state = UiState.Failed(s.message)
+                DownloadState.Idle -> if (state is UiState.Downloading) state = UiState.Idle
+            }
+        }
     }
 
     val pickLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -209,7 +225,7 @@ fun CompressorScreen(initialUri: Uri? = null) {
                 .padding(horizontal = 20.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            val isWorking = state is UiState.Working
+            val isWorking = state is UiState.Working || state is UiState.Downloading
 
             OutlinedButton(
                 onClick = { pickLauncher.launch("*/*") },
@@ -229,6 +245,35 @@ fun CompressorScreen(initialUri: Uri? = null) {
                         "Pick a file, then choose a target size. The app will re-encode it to fit.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = downloadUrl,
+                        onValueChange = { downloadUrl = it },
+                        label = { Text("Video URL") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            DownloadService.start(context, downloadUrl.trim())
+                            downloadUrl = ""
+                        },
+                        enabled = downloadUrl.isNotBlank(),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                    ) {
+                        Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Text("  Download")
+                    }
+                }
+
+                is UiState.Downloading -> {
+                    DownloadingCard(
+                        message = s.message,
+                        progress = s.progress,
+                        onCancel = { DownloadService.cancel(context) }
                     )
                 }
 

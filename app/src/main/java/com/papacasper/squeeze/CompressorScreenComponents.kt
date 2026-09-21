@@ -221,6 +221,30 @@ fun ResultCard(originalBytes: Long, resultBytes: Long, fitsTarget: Boolean, targ
 }
 
 @Composable
+fun DownloadingCard(message: String, progress: Float, onCancel: () -> Unit) {
+    val animatedProgress by animateFloatAsState(targetValue = progress, label = "download_progress")
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CircularProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp
+                )
+                Text(message, style = MaterialTheme.typography.bodyMedium)
+            }
+            LinearProgressIndicator(
+                progress = { animatedProgress },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
+                Text("Cancel")
+            }
+        }
+    }
+}
+
+@Composable
 fun ErrorCard(message: String) {
     Card(
         modifier = Modifier.fillMaxWidth(),
