@@ -34,9 +34,14 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // R8 minification off: youtubedl-android bundles Chaquopy (embedded Python) whose
+            // internal reflection use isn't R8-shrink-safe even with keep rules for our own
+            // packages — it crashes deep inside initPython() with "class X is not a concrete
+            // class". Not worth chasing further: this is a sideloaded personal app, and code
+            // shrinking is negligible against the ~200MB already added by bundled native
+            // yt-dlp/Python/ffmpeg binaries.
+            isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -50,6 +55,16 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+
+    // youtubedl-android ships yt-dlp/Python/ffmpeg as fake .so files it expects to find
+    // as real extracted, executable files under nativeLibraryDir. AGP 8.1+ defaults native
+    // libs to compressed/page-aligned-in-APK (useLegacyPackaging = false), so they're never
+    // extracted and init() silently fails with "instance not initialized" on first use.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
