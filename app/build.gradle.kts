@@ -13,7 +13,7 @@ val localProperties = Properties().apply {
 
 android {
     namespace = "com.papacasper.squeeze"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.papacasper.squeeze"
@@ -54,9 +54,9 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation(platform("androidx.compose:compose-bom:2024.10.00"))
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
@@ -64,13 +64,17 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    implementation("androidx.media3:media3-transformer:1.4.1")
-    implementation("androidx.media3:media3-common:1.4.1")
-    implementation("androidx.media3:media3-effect:1.4.1")
+    implementation("androidx.media3:media3-transformer:1.11.1")
+    implementation("androidx.media3:media3-common:1.11.1")
+    implementation("androidx.media3:media3-effect:1.11.1")
 
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     // Decodes existing animated GIFs into frame bitmaps + delays for GifCompressor.
     implementation("com.github.bumptech.glide:gifdecoder:4.16.0")
+
+    // Bundled yt-dlp + Python runtime and static ffmpeg, for the "paste a URL" download feature.
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
 }

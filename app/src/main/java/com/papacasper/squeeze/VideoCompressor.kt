@@ -15,7 +15,6 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.VideoEncoderSettings
-import androidx.media3.transformer.TransformationRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -162,14 +161,10 @@ object VideoCompressor {
         val result: Result<Unit> = withContext(Dispatchers.Main.immediate) {
         val outerScope = this
         suspendCancellableCoroutine { cont ->
-            val request = TransformationRequest.Builder()
-                .setVideoMimeType(videoMimeType)
-                .build()
-
             lateinit var transformer: Transformer
             lateinit var pollJob: kotlinx.coroutines.Job
             transformer = Transformer.Builder(context)
-                .setTransformationRequest(request)
+                .setVideoMimeType(videoMimeType)
                 .setEncoderFactory(
                     androidx.media3.transformer.DefaultEncoderFactory.Builder(context)
                         .setRequestedVideoEncoderSettings(
