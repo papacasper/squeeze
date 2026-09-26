@@ -1,14 +1,14 @@
 [versions]
-agp = "8.9.1"
-kotlin = "2.2.20"
+agp = "9.4.1"
+kotlin = "2.4.20"
 coreKtx = "1.16.0"
 activityCompose = "1.13.0"
 lifecycle = "2.9.4"
-composeBom = "2026.06.01"
+composeBom = "2026.09.00"
 media3 = "1.11.1"
 exifinterface = "1.4.2"
 coroutines = "1.11.0"
-glideGifdecoder = "4.16.0"
+glideGifdecoder = "5.0.9"
 youtubedl = "0.18.1"
 junit = "4.13.2"
 
@@ -35,5 +35,4 @@ junit = { module = "junit:junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
