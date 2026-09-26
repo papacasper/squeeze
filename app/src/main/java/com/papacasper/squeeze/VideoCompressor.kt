@@ -1,6 +1,8 @@
 package com.papacasper.squeeze
 
 import android.content.Context
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.annotation.OptIn
@@ -28,6 +30,9 @@ object VideoCompressor {
 
     private const val MAX_ATTEMPTS = 8
     private const val MIN_BITRATE = 100_000L
+
+    // Used when the source has an audio track whose bitrate can't be read.
+    private const val FALLBACK_AUDIO_BITRATE = 128_000L
 
     // Some devices' hardware HEVC encoders deadlock partway through a transform and never
     // call onCompleted/onError. If getProgress() reports the same value for this long, treat
@@ -57,8 +62,10 @@ object VideoCompressor {
         val durationSec = (durationMs / 1000.0).coerceAtLeast(1.0)
         val originalHeight = getVideoHeight(context, sourceUri)
 
-        // Reserve ~12% of the target for audio + container overhead.
-        val videoTargetBits = (targetBytes * 8 * 0.88 / durationSec).toLong()
+        // Audio is passed through untouched, so its size is fixed: budget it explicitly, then give
+        // the video what's left of ~92% of the target (the rest covers container overhead).
+        val audioBytes = estimateAudioBitrate(context, sourceUri) * durationSec / 8.0
+        val videoTargetBits = ((targetBytes * 0.92 - audioBytes) * 8 / durationSec).toLong()
         var bitrate = videoTargetBits.coerceIn(MIN_BITRATE, 20_000_000L)
 
         var bestFile: File? = null
@@ -133,7 +140,9 @@ object VideoCompressor {
             }
 
             // Oversized: scale bitrate down proportionally, with extra headroom each retry.
-            val ratio = if (passBytes > 0) targetBytes.toDouble() / passBytes.toDouble() else 0.5
+            val passVideoBytes = (passBytes - audioBytes).coerceAtLeast(passBytes * 0.1)
+            val targetVideoBytes = (targetBytes - audioBytes).coerceAtLeast(targetBytes * 0.1)
+            val ratio = if (passBytes > 0) targetVideoBytes / passVideoBytes else 0.5
             bitrate = (bitrate * ratio * 0.85).toLong().coerceAtLeast(MIN_BITRATE)
         }
 
@@ -243,13 +252,40 @@ object VideoCompressor {
         }
     }
 
+    // Metadata reports the coded (pre-rotation) size, but Transformer's Presentation works on the
+    // upright frame, so a portrait clip stored as 1920x1080 + 90deg rotation is really 1920 tall.
     private fun getVideoHeight(context: Context, uri: Uri): Int {
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1080
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1080
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: height
+            val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            if (rotation == 90 || rotation == 270) width else height
         } finally {
             retriever.release()
+        }
+    }
+
+    private fun estimateAudioBitrate(context: Context, uri: Uri): Long {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(context, uri, null)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    return if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
+                        format.getInteger(MediaFormat.KEY_BIT_RATE).toLong()
+                    } else {
+                        FALLBACK_AUDIO_BITRATE
+                    }
+                }
+            }
+            return 0L
+        } catch (e: Exception) {
+            return FALLBACK_AUDIO_BITRATE
+        } finally {
+            extractor.release()
         }
     }
 }

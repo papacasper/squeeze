@@ -37,7 +37,8 @@ sealed class CompressionState {
         val resultFile: File,
         val mime: String,
         val fitsTarget: Boolean,
-        val targetLabel: String
+        val targetLabel: String,
+        val suggestedName: String
     ) : CompressionState()
     data class Failed(val message: String) : CompressionState()
 }
@@ -88,14 +89,19 @@ class CompressionService : Service() {
         val isGif = mime == "image/gif"
         val videoToGif = isVideo && toGif
 
+        // startForegroundService() obliges us to call startForeground() even if we then refuse the job.
         startForeground(NOTIF_ID, buildNotification("Starting compression...", 0, indeterminate = true))
+        if (job?.isActive == true) return
         CompressionRepository.state.value = CompressionState.Working(
             originalBytes, "Starting compression...", 0f, indeterminate = !isVideo && !isGif, uri = uri, mime = mime
         )
 
         job = serviceScope.launch {
             try {
-                val outDir = File(cacheDir, "compressed").apply { mkdirs() }
+                val outDir = File(cacheDir, "compressed").apply {
+                    deleteRecursively()
+                    mkdirs()
+                }
                 val outFile = File(
                     outDir,
                     when {
@@ -143,7 +149,8 @@ class CompressionService : Service() {
                     resultFile = outFile,
                     mime = resultMime,
                     fitsTarget = fits,
-                    targetLabel = targetLabel
+                    targetLabel = targetLabel,
+                    suggestedName = squeezedName(queryDisplayName(contentResolver, uri), outFile)
                 )
                 notify(buildNotification(if (fits) "Done — fits under $targetLabel" else "Done — still over $targetLabel", 100, indeterminate = false))
 
@@ -160,6 +167,10 @@ class CompressionService : Service() {
                 )
             } catch (e: CancellationException) {
                 CompressionRepository.state.value = CompressionState.Idle
+            } catch (e: OutOfMemoryError) {
+                CompressionRepository.state.value = CompressionState.Failed(
+                    "Not enough memory to process this file. Try a smaller or shorter one."
+                )
             } catch (e: Exception) {
                 CompressionRepository.state.value = CompressionState.Failed(e.message ?: "Unknown error during compression")
             } finally {

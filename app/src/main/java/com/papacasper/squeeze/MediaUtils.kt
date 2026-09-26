@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Size
+import java.io.File
 
 fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? {
     return resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -61,4 +62,13 @@ fun formatSize(bytes: Long): String {
         unitIndex++
     }
     return "%.1f %s".format(value, units[unitIndex])
+}
+
+/** "holiday.mov" + result "compressed.mp4" -> "holiday-squeezed.mp4". */
+fun squeezedName(originalDisplayName: String?, resultFile: File): String {
+    val ext = resultFile.extension.ifEmpty { "bin" }
+    val stem = originalDisplayName?.substringBeforeLast('.', "")?.ifBlank { null }
+        ?: originalDisplayName?.ifBlank { null }
+        ?: "squeeze"
+    return "$stem-squeezed.$ext"
 }

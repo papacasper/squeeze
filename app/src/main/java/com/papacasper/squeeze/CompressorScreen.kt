@@ -50,6 +50,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+private const val SKIP_COMPRESSION_THRESHOLD_BYTES = 20L * 1024 * 1024
+
 private sealed class UiState {
     data object Idle : UiState()
     data class FileSelected(val uri: Uri, val mime: String, val originalBytes: Long, val thumbnail: Bitmap?) : UiState()
@@ -62,7 +64,14 @@ private sealed class UiState {
         val uri: Uri,
         val mime: String
     ) : UiState()
-    data class Done(val originalBytes: Long, val resultFile: File, val mime: String, val fitsTarget: Boolean, val targetLabel: String) : UiState()
+    data class Done(
+        val originalBytes: Long,
+        val resultFile: File,
+        val mime: String,
+        val fitsTarget: Boolean,
+        val targetLabel: String,
+        val suggestedName: String
+    ) : UiState()
     data class Failed(val message: String) : UiState()
     data class Downloading(val message: String, val progress: Float) : UiState()
 }
@@ -82,23 +91,41 @@ fun CompressorScreen(initialUri: Uri? = null) {
     var trimEndMs by remember { mutableStateOf(0L) }
     var downloadUrl by remember { mutableStateOf("") }
 
+    fun toast(message: String) = android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+    fun saveOrToast(action: () -> Unit) {
+        try {
+            action()
+        } catch (e: Exception) {
+            toast("Couldn't save: ${e.message ?: "unknown error"}")
+        }
+    }
+
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
 
     // Compression runs in CompressionService (a foreground service) so it survives the app
     // being backgrounded or its process being reclaimed; this just mirrors that shared state
-    // into the local UiState the screen renders.
+    // into the local UiState the screen renders. Done/Failed are one-shot results: once shown
+    // they're reset to Idle so a later launch or recomposition doesn't replay them.
     LaunchedEffect(Unit) {
         CompressionRepository.state.collect { s ->
             when (s) {
                 is CompressionState.Working -> state = UiState.Working(
                     s.originalBytes, s.message, s.progress, s.indeterminate, workingThumbnail, s.uri, s.mime
                 )
-                is CompressionState.Done -> state = UiState.Done(
-                    s.originalBytes, s.resultFile, s.mime, s.fitsTarget, s.targetLabel
-                )
-                is CompressionState.Failed -> state = UiState.Failed(s.message)
+                is CompressionState.Done -> {
+                    if (s.resultFile.exists()) {
+                        state = UiState.Done(
+                            s.originalBytes, s.resultFile, s.mime, s.fitsTarget, s.targetLabel, s.suggestedName
+                        )
+                    }
+                    CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
+                }
+                is CompressionState.Failed -> {
+                    state = UiState.Failed(s.message)
+                    CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
+                }
                 CompressionState.Idle -> if (state is UiState.Working) state = UiState.Idle
             }
         }
@@ -138,8 +165,14 @@ fun CompressorScreen(initialUri: Uri? = null) {
         DownloadRepository.state.collect { s ->
             when (s) {
                 is DownloadState.Working -> state = UiState.Downloading(s.message, s.progress)
-                is DownloadState.Done -> selectFile(s.uri)
-                is DownloadState.Failed -> state = UiState.Failed(s.message)
+                is DownloadState.Done -> {
+                    selectFile(s.uri)
+                    DownloadRepository.state.compareAndSet(s, DownloadState.Idle)
+                }
+                is DownloadState.Failed -> {
+                    state = UiState.Failed(s.message)
+                    DownloadRepository.state.compareAndSet(s, DownloadState.Idle)
+                }
                 DownloadState.Idle -> if (state is UiState.Downloading) state = UiState.Idle
             }
         }
@@ -160,6 +193,10 @@ fun CompressorScreen(initialUri: Uri? = null) {
         trimStartMs: Long,
         trimDurationMs: Long
     ) {
+        if (CompressionRepository.state.value is CompressionState.Working) {
+            toast("A compression is already running")
+            return
+        }
         val isVideo = mime.startsWith("video")
         val isGif = mime == "image/gif"
         workingThumbnail = thumbnail
@@ -289,6 +326,45 @@ fun CompressorScreen(initialUri: Uri? = null) {
                         ThumbnailPreview(s.thumbnail)
                     }
                     InfoCard(label = "Selected file", size = s.originalBytes)
+                    if (s.originalBytes <= SKIP_COMPRESSION_THRESHOLD_BYTES) {
+                        Text(
+                            "Already under ${formatSize(SKIP_COMPRESSION_THRESHOLD_BYTES)} — compression is optional",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                val name = queryDisplayName(context.contentResolver, s.uri) ?: "squeeze_original"
+                                saveOrToast {
+                                    SaveUtils.saveUriToDownloads(context, s.uri, name, s.mime)
+                                    toast("Saved to Downloads/Squeeze")
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("  Save as-is")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val name = queryDisplayName(context.contentResolver, s.uri) ?: "squeeze_original"
+                                saveOrToast {
+                                    val savedUri = SaveUtils.saveUriToDownloads(context, s.uri, name, s.mime)
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(
+                                            SaveUtils.shareIntent(savedUri, s.mime),
+                                            "Share file"
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("  Share as-is")
+                        }
+                    }
                     if (s.mime.startsWith("video")) {
                         VideoModeToggle(
                             convertToGif = convertToGif,
@@ -345,12 +421,10 @@ fun CompressorScreen(initialUri: Uri? = null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
                             onClick = {
-                                SaveUtils.saveToDownloads(context, s.resultFile, s.mime)
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "Saved to Downloads/Squeeze",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
+                                saveOrToast {
+                                    SaveUtils.saveToDownloads(context, s.resultFile, s.suggestedName, s.mime)
+                                    toast("Saved to Downloads/Squeeze")
+                                }
                             },
                             modifier = Modifier.weight(1f)
                         ) {
@@ -359,13 +433,15 @@ fun CompressorScreen(initialUri: Uri? = null) {
                         }
                         Button(
                             onClick = {
-                                val uri = SaveUtils.saveToDownloads(context, s.resultFile, s.mime)
-                                context.startActivity(
-                                    android.content.Intent.createChooser(
-                                        SaveUtils.shareIntent(uri, s.mime),
-                                        "Share compressed file"
+                                saveOrToast {
+                                    val uri = SaveUtils.saveToDownloads(context, s.resultFile, s.suggestedName, s.mime)
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(
+                                            SaveUtils.shareIntent(uri, s.mime),
+                                            "Share compressed file"
+                                        )
                                     )
-                                )
+                                }
                             },
                             modifier = Modifier.weight(1f)
                         ) {
