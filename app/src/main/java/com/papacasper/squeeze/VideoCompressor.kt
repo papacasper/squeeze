@@ -59,11 +59,13 @@ object VideoCompressor {
         trimDurationMs: Long = 0L,
         onProgress: (String, Float) -> Unit
     ): File {
+        DecodeCheck.problem(context, sourceUri)?.let { throw IllegalStateException(it) }
         val fullDurationMs = getDurationMs(context, sourceUri)
         val trimmed = trimDurationMs > 0L
         val durationMs = if (trimmed) trimDurationMs else fullDurationMs
         val durationSec = (durationMs / 1000.0).coerceAtLeast(1.0)
         val originalHeight = getVideoHeight(context, sourceUri)
+        val maxAttempts = AttemptBudget.forSource(getVideoWidth(context, sourceUri), getVideoHeightRaw(context, sourceUri), MAX_ATTEMPTS)
 
         // Audio is passed through untouched, so its size is fixed: budget it explicitly, then give
         // the video what's left of ~92% of the target (the rest covers container overhead).
@@ -83,12 +85,12 @@ object VideoCompressor {
         var previousPassBytes = Long.MAX_VALUE
         var ladderIndex = 0
 
-        for (attempt in 1..MAX_ATTEMPTS) {
+        for (attempt in 1..maxAttempts) {
             val targetHeight = HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }
                 .coerceAtMost(originalHeight)
-            val passBase = (attempt - 1).toFloat() / MAX_ATTEMPTS
+            val passBase = (attempt - 1).toFloat() / maxAttempts
             onProgress(
-                "Encoding pass $attempt of $MAX_ATTEMPTS (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
+                "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
                 passBase
             )
             val passFile = File(outputFile.parentFile, "pass${attempt}_${outputFile.name}")
@@ -96,8 +98,8 @@ object VideoCompressor {
                 try {
                     transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
-                            "Encoding pass $attempt of $MAX_ATTEMPTS (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
-                            passBase + intraFraction / MAX_ATTEMPTS
+                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
+                            passBase + intraFraction / maxAttempts
                         )
                     }
                 } catch (e: StallException) {
@@ -108,8 +110,8 @@ object VideoCompressor {
                     )
                     transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
-                            "Encoding pass $attempt of $MAX_ATTEMPTS (target ${bitrate / 1000} kbps, ${targetHeight}p, H.264)...",
-                            passBase + intraFraction / MAX_ATTEMPTS
+                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p, H.264)...",
+                            passBase + intraFraction / maxAttempts
                         )
                     }
                 }
@@ -277,6 +279,19 @@ object VideoCompressor {
             val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: height
             val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
             if (rotation == 90 || rotation == 270) width else height
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun getVideoWidth(context: Context, uri: Uri): Int = metadataInt(context, uri, MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+    private fun getVideoHeightRaw(context: Context, uri: Uri): Int = metadataInt(context, uri, MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+
+    private fun metadataInt(context: Context, uri: Uri, key: Int): Int {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            retriever.extractMetadata(key)?.toIntOrNull() ?: 0
         } finally {
             retriever.release()
         }

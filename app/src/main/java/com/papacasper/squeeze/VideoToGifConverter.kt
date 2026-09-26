@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import java.io.File
@@ -149,7 +150,12 @@ object VideoToGifConverter {
                 // snaps to the nearest keyframe instead, which with typical ~1-2s keyframe
                 // intervals collapses most requested timestamps onto the same frame and
                 // makes playback look choppy/stuttery.
-                val frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                // Decode straight to the target size: a full-resolution 8K frame is ~130 MB.
+                val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, width, height)
+                } else {
+                    retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                }
                 if (frame != null) {
                     val scaled = if (frame.width != width || frame.height != height) {
                         Bitmap.createScaledBitmap(frame, width, height, true)

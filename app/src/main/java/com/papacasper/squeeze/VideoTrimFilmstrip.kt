@@ -73,7 +73,7 @@ fun VideoTrimFilmstrip(
                 retriever.setDataSource(context, uri)
                 for (i in 0 until frameCount) {
                     val t = (durationMs.toDouble() * i / frameCount).toLong().coerceAtLeast(0)
-                    retriever.getFrameAtTime(t * 1000L, MediaMetadataRetriever.OPTION_CLOSEST)?.let { list.add(it) }
+                    retriever.scaledFrame(t * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 160)?.let { list.add(it) }
                 }
             } catch (e: Exception) {
                 // leave list as-is; filmstrip just stays blank

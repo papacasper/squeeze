@@ -29,13 +29,39 @@ fun queryVideoDurationMs(context: android.content.Context, uri: Uri): Long {
     }
 }
 
+/**
+ * A frame decoded at thumbnail size. Plain getFrameAtTime returns the full-resolution frame, which for
+ * an 8K video is a ~130 MB bitmap per call; that alone is enough to exhaust memory and freeze the app.
+ */
+fun MediaMetadataRetriever.scaledFrame(timeUs: Long, option: Int, maxDim: Int): Bitmap? {
+    var w = extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+    var h = extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+    val rotation = extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+    if (rotation == 90 || rotation == 270) { val t = w; w = h; h = t }
+    if (w <= 0 || h <= 0) return getFrameAtTime(timeUs, option)?.let { shrinkToFit(it, maxDim) }
+    val scale = minOf(1f, maxDim.toFloat() / maxOf(w, h))
+    val dstW = (w * scale).toInt().coerceAtLeast(1)
+    val dstH = (h * scale).toInt().coerceAtLeast(1)
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+        getScaledFrameAtTime(timeUs, option, dstW, dstH)
+    } else {
+        getFrameAtTime(timeUs, option)?.let { shrinkToFit(it, maxDim) }
+    }
+}
+
+private fun shrinkToFit(bmp: Bitmap, maxDim: Int): Bitmap {
+    val scale = maxDim.toFloat() / maxOf(bmp.width, bmp.height)
+    if (scale >= 1f) return bmp
+    return Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt().coerceAtLeast(1), (bmp.height * scale).toInt().coerceAtLeast(1), true).also { bmp.recycle() }
+}
+
 fun decodeThumbnail(resolver: ContentResolver, uri: Uri, mime: String): Bitmap? {
     return try {
         if (mime.startsWith("video")) {
             val retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(resolver.openFileDescriptor(uri, "r")?.fileDescriptor)
-                retriever.getFrameAtTime(0)
+                retriever.scaledFrame(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 512)
             } finally {
                 retriever.release()
             }

@@ -21,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -76,14 +78,30 @@ class DownloadService : Service() {
                 }
 
                 withContext(Dispatchers.IO) {
-                    val request = YoutubeDLRequest(url).apply {
-                        addOption("-f", "bestvideo+bestaudio/best")
-                        addOption("--merge-output-format", "mp4")
-                        addOption("--no-playlist")
-                        addOption("-o", File(outDir, "download.%(ext)s").absolutePath)
+                    fun runDownload() {
+                        val request = YoutubeDLRequest(url).apply {
+                            addOption("-f", DownloadFormat.selector())
+                            addOption("--merge-output-format", "mp4")
+                            addOption("--no-playlist")
+                            addOption("-o", File(outDir, "download.%(ext)s").absolutePath)
+                        }
+                        YoutubeDL.getInstance().execute(request, PROCESS_ID) { progress, _, line ->
+                            onProgress(line.ifBlank { "Downloading..." }, (progress / 100f).coerceIn(0f, 1f))
+                        }
                     }
-                    YoutubeDL.getInstance().execute(request, PROCESS_ID) { progress, _, line ->
-                        onProgress(line.ifBlank { "Downloading..." }, (progress / 100f).coerceIn(0f, 1f))
+                    try {
+                        runDownload()
+                    } catch (e: YoutubeDLException) {
+                        // Sites change constantly and a stale yt-dlp is the usual reason a working URL
+                        // suddenly fails: update once and retry. A user cancel kills the process, which
+                        // also lands here, so bail out first if the job is no longer active.
+                        currentCoroutineContext().ensureActive()
+                        onProgress("Download failed; updating yt-dlp and retrying...", 0f)
+                        val status = YoutubeDL.getInstance()
+                            .updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel._STABLE)
+                        if (status != YoutubeDL.UpdateStatus.DONE) throw e  // already current: the failure is real
+                        outDir.listFiles()?.forEach { it.deleteRecursively() }
+                        runDownload()
                     }
                 }
 

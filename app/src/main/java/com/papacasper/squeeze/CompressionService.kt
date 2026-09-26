@@ -54,7 +54,8 @@ class CompressionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    // Bound (never used for calls) only so the UI process learns if this process dies mid-job.
+    override fun onBind(intent: Intent?): IBinder? = android.os.Binder()
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
@@ -104,10 +105,11 @@ class CompressionService : Service() {
             else -> startForeground(NOTIF_ID, notification)
         }
         if (job?.isActive == true) return
-        CompressionRepository.state.value = CompressionState.Working(
+        publishState(CompressionState.Working(
             originalBytes, "Starting compression...", 0f, indeterminate = !isVideo && !isGif, uri = uri, mime = mime
-        )
+        ))
 
+        ExitDiagnostics.jobStarted(applicationContext, queryDisplayName(contentResolver, uri) ?: uri.lastPathSegment ?: "a file")
         job = serviceScope.launch {
             try {
                 val outDir = File(cacheDir, "compressed").apply {
@@ -131,9 +133,9 @@ class CompressionService : Service() {
                 }
 
                 fun onProgress(msg: String, fraction: Float) {
-                    CompressionRepository.state.value = CompressionState.Working(
+                    publishState(CompressionState.Working(
                         originalBytes, msg, fraction, indeterminate = false, uri = uri, mime = mime
-                    )
+                    ))
                     notify(buildNotification(msg, (fraction * 100).toInt(), indeterminate = false))
                 }
 
@@ -160,36 +162,30 @@ class CompressionService : Service() {
                 }
 
                 val fits = outFile.length() <= targetBytes
-                CompressionRepository.state.value = CompressionState.Done(
-                    originalBytes = originalBytes,
-                    resultFile = outFile,
-                    mime = resultMime,
-                    fitsTarget = fits,
-                    targetLabel = targetLabel,
-                    suggestedName = squeezedName(queryDisplayName(contentResolver, uri), outFile)
+                val sourceName = queryDisplayName(contentResolver, uri) ?: outFile.name
+                CompressionBridge.publish(
+                    applicationContext,
+                    CompressionState.Done(
+                        originalBytes = originalBytes,
+                        resultFile = outFile,
+                        mime = resultMime,
+                        fitsTarget = fits,
+                        targetLabel = targetLabel,
+                        suggestedName = squeezedName(queryDisplayName(contentResolver, uri), outFile)
+                    ),
+                    sourceName
                 )
                 notify(buildNotification(if (fits) "Done — fits under $targetLabel" else "Done — still over $targetLabel", 100, indeterminate = false))
-
-                HistoryStore.addEntry(
-                    applicationContext,
-                    HistoryEntry(
-                        timestampMs = System.currentTimeMillis(),
-                        fileName = queryDisplayName(contentResolver, uri) ?: outFile.name,
-                        originalBytes = originalBytes,
-                        resultBytes = outFile.length(),
-                        targetLabel = targetLabel,
-                        fitsTarget = fits
-                    )
-                )
             } catch (e: CancellationException) {
-                CompressionRepository.state.value = CompressionState.Idle
+                publishState(CompressionState.Idle)
             } catch (e: OutOfMemoryError) {
-                CompressionRepository.state.value = CompressionState.Failed(
+                publishState(CompressionState.Failed(
                     "Not enough memory to process this file. Try a smaller or shorter one."
-                )
+                ))
             } catch (e: Exception) {
-                CompressionRepository.state.value = CompressionState.Failed(e.message ?: "Unknown error during compression")
+                publishState(CompressionState.Failed(e.message ?: "Unknown error during compression"))
             } finally {
+                ExitDiagnostics.jobFinished(applicationContext)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -201,6 +197,8 @@ class CompressionService : Service() {
         job?.cancel()
         serviceScope.cancel()
     }
+
+    private fun publishState(state: CompressionState) = CompressionBridge.publish(applicationContext, state)
 
     private fun notify(notification: Notification) {
         val manager = getSystemService(NotificationManager::class.java)
