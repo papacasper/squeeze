@@ -133,7 +133,13 @@ fun CompressorScreen(initialUri: Uri? = null) {
 
     fun selectFile(uri: Uri) {
         val mime = context.contentResolver.getType(uri) ?: ""
-        val size = context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+        // A shared/picked Uri can be unreadable (permission revoked, provider gone): show an error, don't crash.
+        val size = try {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+        } catch (e: Exception) {
+            state = UiState.Failed("Couldn't open that file (${e.javaClass.simpleName}). Try picking it again.")
+            return
+        }
         convertToGif = false
         videoDurationMs = 0L
         trimStartMs = 0L

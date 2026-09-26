@@ -12,10 +12,22 @@ object BitrateMath {
     // versus the previous one means the ladder should step down a resolution.
     private const val STALLED_SHRINK_RATIO = 0.9
 
-    /** First-pass video bitrate: the target minus the (untouched) audio, at [TARGET_FILL] of the budget. */
-    fun initialVideoBitrate(targetBytes: Long, durationSec: Double, audioBytes: Double): Long =
-        ((targetBytes * TARGET_FILL - audioBytes) * 8 / durationSec).toLong()
-            .coerceIn(MIN_BITRATE, MAX_BITRATE)
+    // A source already under the target must not be re-encoded bigger; aim a bit below its own size.
+    private const val SOURCE_FILL = 0.8
+
+    /**
+     * First-pass video bitrate: the target minus the (untouched) audio, at [TARGET_FILL] of the budget.
+     * The budget is capped at [SOURCE_FILL] of [sourceBytes] so small sources shrink rather than grow.
+     */
+    fun initialVideoBitrate(
+        targetBytes: Long,
+        durationSec: Double,
+        audioBytes: Double,
+        sourceBytes: Long = Long.MAX_VALUE
+    ): Long {
+        val budget = minOf(targetBytes.toDouble() * TARGET_FILL, sourceBytes.toDouble() * SOURCE_FILL)
+        return ((budget - audioBytes) * 8 / durationSec).toLong().coerceIn(MIN_BITRATE, MAX_BITRATE)
+    }
 
     /** Next bitrate after an oversized pass: scale by the video share's miss, with 15% extra headroom. */
     fun nextVideoBitrate(bitrate: Long, passBytes: Long, targetBytes: Long, audioBytes: Double): Long {

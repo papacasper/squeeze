@@ -1,9 +1,9 @@
 import java.util.Properties
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
 }
 
 val localProperties = Properties().apply {
@@ -42,6 +42,9 @@ android {
             // yt-dlp/Python/ffmpeg binaries.
             isMinifyEnabled = false
             isShrinkResources = false
+            // arm64 only: yt-dlp/Python/ffmpeg ship once per ABI, so dropping 32-bit ARM and x86
+            // cuts the APK by ~3/4. Debug builds stay universal so x86 emulators still work.
+            ndk { abiFilters += "arm64-v8a" }
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -69,29 +72,29 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.16.0")
-    implementation("androidx.activity:activity-compose:1.13.0")
-    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    debugImplementation("androidx.compose.ui:ui-tooling")
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
 
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit)
 
-    implementation("androidx.media3:media3-transformer:1.11.1")
-    implementation("androidx.media3:media3-common:1.11.1")
-    implementation("androidx.media3:media3-effect:1.11.1")
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.common)
+    implementation(libs.androidx.media3.effect)
 
-    implementation("androidx.exifinterface:exifinterface:1.4.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation(libs.androidx.exifinterface)
+    implementation(libs.kotlinx.coroutines.android)
 
     // Decodes existing animated GIFs into frame bitmaps + delays for GifCompressor.
-    implementation("com.github.bumptech.glide:gifdecoder:4.16.0")
+    implementation(libs.glide.gifdecoder)
 
     // Bundled yt-dlp + Python runtime and static ffmpeg, for the "paste a URL" download feature.
-    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
+    implementation(libs.youtubedl.library)
+    implementation(libs.youtubedl.ffmpeg)
 }

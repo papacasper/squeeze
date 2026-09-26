@@ -48,4 +48,11 @@ class BitrateMathTest {
             Locale.setDefault(old)
         }
     }
+
+    @Test
+    fun initialBitrateNeverAimsAboveSmallSource() {
+        // 770 KB source, 10 s, no audio, 10 MB target: budget is 80% of the source, not 92% of the target.
+        val bitrate = BitrateMath.initialVideoBitrate(10_000_000, 10.0, 0.0, sourceBytes = 770_000)
+        assertEquals((770_000 * 0.8 * 8 / 10).toLong(), bitrate)
+    }
 }

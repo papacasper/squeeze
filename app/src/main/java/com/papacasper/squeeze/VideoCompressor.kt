@@ -64,7 +64,9 @@ object VideoCompressor {
         // Audio is passed through untouched, so its size is fixed: budget it explicitly, then give
         // the video what's left of ~92% of the target (the rest covers container overhead).
         val audioBytes = estimateAudioBitrate(context, sourceUri) * durationSec / 8.0
-        var bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes)
+        val sourceBytes = context.contentResolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length }
+            ?.takeIf { it > 0 } ?: Long.MAX_VALUE
+        var bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes, sourceBytes)
 
         var bestFile: File? = null
         var bestBytes = Long.MAX_VALUE
