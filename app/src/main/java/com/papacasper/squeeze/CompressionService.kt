@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -90,7 +91,16 @@ class CompressionService : Service() {
         val videoToGif = isVideo && toGif
 
         // startForegroundService() obliges us to call startForeground() even if we then refuse the job.
-        startForeground(NOTIF_ID, buildNotification("Starting compression...", 0, indeterminate = true))
+        // mediaProcessing (API 35+) is the type meant for transcoding; dataSync is time-capped there.
+        val notification = buildNotification("Starting compression...", 0, indeterminate = true)
+        when {
+            // Platform call, not ServiceCompat: ServiceCompat.startForeground with this type crashed on-device ("FGS type none", core 1.16).
+            Build.VERSION.SDK_INT >= 35 ->
+                startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
+            Build.VERSION.SDK_INT >= 29 ->
+                startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            else -> startForeground(NOTIF_ID, notification)
+        }
         if (job?.isActive == true) return
         CompressionRepository.state.value = CompressionState.Working(
             originalBytes, "Starting compression...", 0f, indeterminate = !isVideo && !isGif, uri = uri, mime = mime

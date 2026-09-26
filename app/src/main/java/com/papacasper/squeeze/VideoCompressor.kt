@@ -66,6 +66,8 @@ object VideoCompressor {
         val audioBytes = estimateAudioBitrate(context, sourceUri) * durationSec / 8.0
         val sourceBytes = context.contentResolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length }
             ?.takeIf { it > 0 } ?: Long.MAX_VALUE
+        // A source already under the target must come out smaller than itself, not merely under the target.
+        val goalBytes = if (sourceBytes <= targetBytes) (sourceBytes * 0.9).toLong() else targetBytes
         var bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes, sourceBytes)
 
         var bestFile: File? = null
@@ -122,7 +124,7 @@ object VideoCompressor {
                 passFile.delete()
             }
 
-            if (passBytes in 1..targetBytes) break
+            if (passBytes in 1..goalBytes) break
 
             // If the last resolution step barely moved the needle, the bitrate request is
             // being clamped by the encoder — escalate resolution downscaling instead.
@@ -137,7 +139,7 @@ object VideoCompressor {
             }
 
             // Oversized: scale bitrate down proportionally, with extra headroom each retry.
-            bitrate = BitrateMath.nextVideoBitrate(bitrate, passBytes, targetBytes, audioBytes)
+            bitrate = BitrateMath.nextVideoBitrate(bitrate, passBytes, goalBytes, audioBytes)
         }
 
         val result = bestFile ?: throw IllegalStateException("Video compression failed to produce output")
