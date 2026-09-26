@@ -1,0 +1,5 @@
+Trim any video before compressing it, not just clips for GIFs.
+Share a video link from another app straight into Squeeze.
+Sharper, smoother GIFs: full frame rate kept, with a shared palette and delta frames.
+Downloads are capped at 1080p, and yt-dlp updates itself and retries if a site breaks.
+Huge videos (such as 8K) no longer crash the app: a failed job now shows why, and the app stays open.
