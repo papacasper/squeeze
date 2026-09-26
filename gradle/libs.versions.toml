@@ -7,7 +7,7 @@ composeBom = "2026.06.01"
 media3 = "1.11.1"
 exifinterface = "1.4.2"
 coroutines = "1.11.0"
-glideGifdecoder = "4.16.0"
+glideGifdecoder = "5.0.9"
 youtubedl = "0.18.1"
 junit = "4.13.2"
 
