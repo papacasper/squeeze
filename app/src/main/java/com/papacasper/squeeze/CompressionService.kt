@@ -53,6 +53,7 @@ class CompressionService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
+    private var lastState: CompressionState.Working? = null
 
     // Bound (never used for calls) only so the UI process learns if this process dies mid-job.
     override fun onBind(intent: Intent?): IBinder? = android.os.Binder()
@@ -60,6 +61,11 @@ class CompressionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
             job?.cancel()
+            return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_SYNC) {
+            lastState?.let { CompressionBridge.publish(applicationContext, it) }
             return START_NOT_STICKY
         }
 
@@ -198,7 +204,10 @@ class CompressionService : Service() {
         serviceScope.cancel()
     }
 
-    private fun publishState(state: CompressionState) = CompressionBridge.publish(applicationContext, state)
+    private fun publishState(state: CompressionState) {
+        lastState = state as? CompressionState.Working
+        CompressionBridge.publish(applicationContext, state)
+    }
 
     private fun notify(notification: Notification) {
         val manager = getSystemService(NotificationManager::class.java)
@@ -233,6 +242,7 @@ class CompressionService : Service() {
         private const val NOTIF_ID = 42
 
         const val ACTION_CANCEL = "com.papacasper.squeeze.action.CANCEL"
+        const val ACTION_SYNC = "com.papacasper.squeeze.action.SYNC"
         private const val EXTRA_URI = "uri"
         private const val EXTRA_MIME = "mime"
         private const val EXTRA_ORIGINAL_BYTES = "original_bytes"
