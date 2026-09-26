@@ -11,6 +11,18 @@ val localProperties = Properties().apply {
     if (file.exists()) file.inputStream().use { load(it) }
 }
 
+// Signing values come from local.properties, or from the environment on CI. Without them (e.g.
+// an F-Droid build, which signs with its own key) the release build is simply left unsigned.
+fun signingValue(property: String, env: String): String? =
+    localProperties.getProperty(property) ?: System.getenv(env)
+
+val releaseKeystore = rootProject.file("release.keystore")
+val releaseStorePassword = signingValue("keystore.storePassword", "KEYSTORE_STORE_PASSWORD")
+val releaseKeyAlias = signingValue("keystore.keyAlias", "KEYSTORE_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keystore.keyPassword", "KEYSTORE_KEY_PASSWORD")
+val canSignRelease = releaseKeystore.exists() &&
+    releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
+
 android {
     namespace = "com.papacasper.squeeze"
     compileSdk = 36
@@ -19,17 +31,25 @@ android {
         applicationId = "com.papacasper.squeeze"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "2026.09.21b"
+        versionCode = 26
+        versionName = "2026.09.25"
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file("release.keystore")
-            storePassword = localProperties.getProperty("keystore.storePassword")
-            keyAlias = localProperties.getProperty("keystore.keyAlias")
-            keyPassword = localProperties.getProperty("keystore.keyPassword")
+        if (canSignRelease) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
+    }
+
+    // The signing-metadata blob AGP embeds in the APK is opaque to F-Droid's scanner and useless here.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     buildTypes {
@@ -45,7 +65,7 @@ android {
             // arm64 only: yt-dlp/Python/ffmpeg ship once per ABI, so dropping 32-bit ARM and x86
             // cuts the APK by ~3/4. Debug builds stay universal so x86 emulators still work.
             ndk { abiFilters += "arm64-v8a" }
-            signingConfig = signingConfigs.getByName("release")
+            if (canSignRelease) signingConfig = signingConfigs.getByName("release")
         }
     }
 

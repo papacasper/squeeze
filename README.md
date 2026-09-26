@@ -18,7 +18,7 @@ Sending a video to Discord, email, or a chat app that caps attachment size usual
 
 ## Building
 
-Requires the Android SDK (`compileSdk 35`, `minSdk 26`) and JDK 17.
+Requires the Android SDK (`compileSdk 36`, `minSdk 26`) and JDK 17.
 
 ```bash
 ./gradlew :app:assembleDebug     # debug build

@@ -1,0 +1,69 @@
+name: Release
+
+# Push a tag like v2026.09.25 (matching versionName in app/build.gradle.kts) to build a signed
+# APK and attach it to a GitHub Release. Needs these repository secrets, otherwise the job
+# only prints a notice and stops:
+#   KEYSTORE_BASE64          base64 of release.keystore
+#   KEYSTORE_STORE_PASSWORD, KEYSTORE_KEY_ALIAS, KEYSTORE_KEY_PASSWORD
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+      KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+      KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check signing secrets
+        id: secrets
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_STORE_PASSWORD" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Signing secrets not set; skipping the release build."
+          fi
+
+      - name: Tag matches versionName
+        if: steps.secrets.outputs.present == 'true'
+        run: |
+          version=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match versionName v${version}"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        if: steps.secrets.outputs.present == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore keystore
+        if: steps.secrets.outputs.present == 'true'
+        run: echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+
+      - name: Test and build release APK
+        if: steps.secrets.outputs.present == 'true'
+        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease --no-daemon
+
+      - name: Publish release asset
+        if: steps.secrets.outputs.present == 'true'
+        run: |
+          apk="Squeeze-${VERSION}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$apk"
+          sha256sum "$apk" > "$apk.sha256"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "$apk" "$apk.sha256" --clobber

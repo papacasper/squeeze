@@ -1,0 +1,12 @@
+Squeeze compresses images, video and GIFs right on your phone so they fit a size limit: Discord, email, RCS, WhatsApp/Telegram, or a custom size. No cloud upload, no account, nothing leaves your device.
+
+<b>Features</b>
+<ul>
+<li>Size targets for Discord (Free / Nitro Basic / Nitro), Email, Text/RCS, WhatsApp/Telegram, or a custom slider</li>
+<li>Images: JPEG quality search that respects EXIF orientation, with downscaling as a fallback</li>
+<li>Video: H.265 (HEVC) re-encode via Media3, retrying at lower bitrate and resolution until it fits, with an automatic H.264 fallback</li>
+<li>GIF: compress existing GIFs or convert a video clip to GIF with trim controls</li>
+<li>Download a video from a link (via yt-dlp) and compress it</li>
+<li>Share to Squeeze from any app; keeps running in the background with a progress notification</li>
+<li>History of your last 20 compressions, stored locally</li>
+</ul>

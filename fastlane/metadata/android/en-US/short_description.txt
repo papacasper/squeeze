@@ -1,0 +1,1 @@
+Shrink images, videos and GIFs on-device to fit a size limit

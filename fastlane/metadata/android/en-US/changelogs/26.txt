@@ -1,0 +1,4 @@
+Video compression no longer makes files that already fit the target bigger.
+Compression runs as a media-processing foreground service on Android 15+.
+No more crash when a shared file can't be opened.
+Smaller download: release builds are arm64 only.
