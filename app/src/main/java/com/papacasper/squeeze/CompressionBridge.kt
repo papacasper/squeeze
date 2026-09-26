@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -55,7 +56,36 @@ object CompressionBridge {
                 .putExtra(EXTRA_SOURCE_NAME, sourceName)
             is CompressionState.Failed -> intent.putExtra(EXTRA_KIND, "failed").putExtra(EXTRA_MESSAGE, state.message)
         }
+        // Terminal results are also written to disk: if the UI process was swiped away mid-job there is
+        // no receiver to catch the broadcast, so the UI picks the result up from here on its next launch.
+        if (state is CompressionState.Done || state is CompressionState.Failed) savePending(context, intent)
         context.sendBroadcast(intent)
+    }
+
+    private fun pendingFile(context: Context) = File(context.filesDir, "pending_result.json")
+
+    private fun savePending(context: Context, intent: Intent) {
+        val json = JSONObject()
+        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME)) {
+            intent.getStringExtra(key)?.let { json.put(key, it) }
+        }
+        json.put(EXTRA_ORIGINAL_BYTES, intent.getLongExtra(EXTRA_ORIGINAL_BYTES, 0L))
+        json.put(EXTRA_FITS, intent.getBooleanExtra(EXTRA_FITS, false))
+        runCatching { pendingFile(context).writeText(json.toString()) }
+    }
+
+    private fun deliverPending() {
+        val file = pendingFile(app)
+        val text = runCatching { file.readText() }.getOrNull() ?: return
+        val json = runCatching { JSONObject(text) }.getOrNull()
+        file.delete()
+        json ?: return
+        val intent = Intent(ACTION_STATE)
+        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME)) {
+            if (json.has(key)) intent.putExtra(key, json.getString(key))
+        }
+        intent.putExtra(EXTRA_ORIGINAL_BYTES, json.optLong(EXTRA_ORIGINAL_BYTES)).putExtra(EXTRA_FITS, json.optBoolean(EXTRA_FITS))
+        handle(intent)
     }
 
     // ---- UI side ----
@@ -83,6 +113,15 @@ object CompressionBridge {
             override fun onReceive(context: Context, intent: Intent) = handle(intent)
         }
         ContextCompat.registerReceiver(application, receiver, IntentFilter(ACTION_STATE), ContextCompat.RECEIVER_NOT_EXPORTED)
+        // The UI process may have been restarted while a job kept running or finished: catch up on both.
+        deliverPending()
+        if (isJobProcessAlive(application)) {
+            try {
+                application.startService(Intent(application, CompressionService::class.java).setAction(CompressionService.ACTION_SYNC))
+            } catch (_: IllegalStateException) {
+                // Started from the background: the job's next progress broadcast catches the UI up instead.
+            }
+        }
     }
 
     private fun handle(intent: Intent) {
@@ -99,6 +138,7 @@ object CompressionBridge {
             }
             "done" -> {
                 unbind()
+                pendingFile(app).delete()
                 val file = File(intent.getStringExtra(EXTRA_PATH).orEmpty())
                 val original = intent.getLongExtra(EXTRA_ORIGINAL_BYTES, 0L)
                 val fits = intent.getBooleanExtra(EXTRA_FITS, false)
@@ -113,6 +153,7 @@ object CompressionBridge {
             }
             "failed" -> {
                 unbind()
+                pendingFile(app).delete()
                 CompressionRepository.state.value = CompressionState.Failed(intent.getStringExtra(EXTRA_MESSAGE).orEmpty())
             }
             "idle" -> {
