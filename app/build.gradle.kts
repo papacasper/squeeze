@@ -28,7 +28,7 @@ android {
 
     defaultConfig {
         applicationId = "com.papacasper.squeeze"
-        minSdk = 26
+        minSdk = 29
         targetSdk = 35
         versionCode = 27
         versionName = "2026.09.26"

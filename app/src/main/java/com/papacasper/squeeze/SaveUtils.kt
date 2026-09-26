@@ -4,7 +4,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
@@ -41,7 +40,7 @@ object SaveUtils {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Squeeze")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.MediaColumns.IS_PENDING, 1)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
 
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -50,10 +49,8 @@ object SaveUtils {
         try {
             val out = resolver.openOutputStream(uri) ?: throw IOException("Could not open $displayName for writing")
             out.use(write)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-                resolver.update(uri, done, null, null)
-            }
+            val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            resolver.update(uri, done, null, null)
         } catch (e: Exception) {
             resolver.delete(uri, null, null)
             throw e
