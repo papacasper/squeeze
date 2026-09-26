@@ -29,7 +29,6 @@ import kotlin.coroutines.resume
 object VideoCompressor {
 
     private const val MAX_ATTEMPTS = 8
-    private const val MIN_BITRATE = 100_000L
 
     // Used when the source has an audio track whose bitrate can't be read.
     private const val FALLBACK_AUDIO_BITRATE = 128_000L
@@ -65,8 +64,7 @@ object VideoCompressor {
         // Audio is passed through untouched, so its size is fixed: budget it explicitly, then give
         // the video what's left of ~92% of the target (the rest covers container overhead).
         val audioBytes = estimateAudioBitrate(context, sourceUri) * durationSec / 8.0
-        val videoTargetBits = ((targetBytes * 0.92 - audioBytes) * 8 / durationSec).toLong()
-        var bitrate = videoTargetBits.coerceIn(MIN_BITRATE, 20_000_000L)
+        var bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes)
 
         var bestFile: File? = null
         var bestBytes = Long.MAX_VALUE
@@ -126,24 +124,18 @@ object VideoCompressor {
 
             // If the last resolution step barely moved the needle, the bitrate request is
             // being clamped by the encoder — escalate resolution downscaling instead.
-            val shrinkRatio = if (previousPassBytes < Long.MAX_VALUE && previousPassBytes > 0) {
-                passBytes.toDouble() / previousPassBytes.toDouble()
-            } else 0.0
-            if (attempt > 1 && shrinkRatio > 0.9 && ladderIndex < HEIGHT_LADDER.lastIndex) {
+            if (attempt > 1 && BitrateMath.shrinkStalled(passBytes, previousPassBytes) && ladderIndex < HEIGHT_LADDER.lastIndex) {
                 ladderIndex++
             }
             previousPassBytes = passBytes
 
-            if (bitrate <= MIN_BITRATE && ladderIndex == HEIGHT_LADDER.lastIndex) {
+            if (bitrate <= BitrateMath.MIN_BITRATE && ladderIndex == HEIGHT_LADDER.lastIndex) {
                 onProgress("Reached minimum bitrate and resolution; can't shrink further.", 1f)
                 break
             }
 
             // Oversized: scale bitrate down proportionally, with extra headroom each retry.
-            val passVideoBytes = (passBytes - audioBytes).coerceAtLeast(passBytes * 0.1)
-            val targetVideoBytes = (targetBytes - audioBytes).coerceAtLeast(targetBytes * 0.1)
-            val ratio = if (passBytes > 0) targetVideoBytes / passVideoBytes else 0.5
-            bitrate = (bitrate * ratio * 0.85).toLong().coerceAtLeast(MIN_BITRATE)
+            bitrate = BitrateMath.nextVideoBitrate(bitrate, passBytes, targetBytes, audioBytes)
         }
 
         val result = bestFile ?: throw IllegalStateException("Video compression failed to produce output")

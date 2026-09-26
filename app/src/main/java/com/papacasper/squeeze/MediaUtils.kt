@@ -61,7 +61,7 @@ fun formatSize(bytes: Long): String {
         value /= 1024
         unitIndex++
     }
-    return "%.1f %s".format(value, units[unitIndex])
+    return String.format(java.util.Locale.US, "%.1f %s", value, units[unitIndex])
 }
 
 /** "holiday.mov" + result "compressed.mp4" -> "holiday-squeezed.mp4". */
