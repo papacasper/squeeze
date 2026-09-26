@@ -47,7 +47,7 @@ import kotlin.math.roundToInt
 /**
  * TikTok-stitch-style trim control: a filmstrip of thumbnails spanning the whole video with a
  * draggable bracketed window over it (dimmed outside the selection). Trims both ends, capped at
- * [VideoToGifConverter.MAX_DURATION_MS].
+ * [maxClipMs] (the GIF limit; unbounded for video).
  */
 @Composable
 fun VideoTrimFilmstrip(
@@ -55,11 +55,12 @@ fun VideoTrimFilmstrip(
     durationMs: Long,
     trimStartMs: Long,
     trimEndMs: Long,
+    maxClipMs: Long,
     onTrimChange: (Long, Long) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
-    val clipMs = VideoToGifConverter.MAX_DURATION_MS
+    val clipMs = maxClipMs
     var thumbnails by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
 
     LaunchedEffect(uri, durationMs) {
@@ -90,7 +91,7 @@ fun VideoTrimFilmstrip(
 
     val primary = MaterialTheme.colorScheme.primary
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Trim clip (${clipMs / 1000}s max)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Text(if (clipMs == Long.MAX_VALUE) "Trim video" else "Trim clip (${clipMs / 1000}s max)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         Text(
             "${formatDuration(trimStartMs)} – ${formatDuration(trimEndMs)} of ${formatDuration(durationMs)} (${formatDuration(trimEndMs - trimStartMs)})",
             style = MaterialTheme.typography.bodyMedium,
@@ -158,13 +159,13 @@ fun VideoTrimFilmstrip(
 
                 val onStartDrag = rememberDraggableState { delta ->
                     val deltaMs = (delta / widthPx * currentDuration).toLong()
-                    var newStart = (currentStart + deltaMs).coerceIn(0L, currentEnd - 500L)
+                    var newStart = (currentStart + deltaMs).coerceIn(0L, currentEnd - TrimMath.MIN_CLIP_MS)
                     if (currentEnd - newStart > clipMs) newStart = currentEnd - clipMs
                     onTrimChange(newStart.coerceAtLeast(0L), currentEnd)
                 }
                 val onEndDrag = rememberDraggableState { delta ->
                     val deltaMs = (delta / widthPx * currentDuration).toLong()
-                    var newEnd = (currentEnd + deltaMs).coerceIn(currentStart + 500L, currentDuration)
+                    var newEnd = (currentEnd + deltaMs).coerceIn(currentStart + TrimMath.MIN_CLIP_MS, currentDuration)
                     if (newEnd - currentStart > clipMs) newEnd = currentStart + clipMs
                     onTrimChange(currentStart, newEnd.coerceAtMost(currentDuration))
                 }

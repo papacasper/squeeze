@@ -2,26 +2,30 @@ package com.papacasper.squeeze
 
 import android.graphics.Bitmap
 import java.io.BufferedOutputStream
-import java.io.IOException
 import java.io.OutputStream
 
 /**
- * Minimal animated GIF89a writer. Each frame is independently quantized with
- * [MedianCutQuantizer] (adaptive per-frame palette) and compressed with GIF's
- * variable-width LZW coding. Frames are written full-size (no delta/transparency
- * optimization), which keeps this simple at the cost of some file size versus a
- * delta-aware encoder.
+ * Animated GIF89a writer. All frames share one global [GifPalette] (built once up front from
+ * sampled frames), and every frame after the first stores only the bounding box of pixels that
+ * changed: unchanged pixels are written as a transparent index over the previous frame
+ * (disposal 1), which LZW squeezes to almost nothing. A non-zero [tolerance] additionally treats
+ * pixels within that colour distance of what's already on screen as unchanged, trading a little
+ * fidelity for size without touching frame rate.
  */
 class GifEncoder(
     outputStream: OutputStream,
     private val width: Int,
     private val height: Int,
     /** Loop count; 0 = loop forever. */
-    private val loopCount: Int = 0
+    private val loopCount: Int = 0,
+    private val palette: GifPalette,
+    /** Max RGB distance at which a pixel counts as unchanged; 0 = exact (lossless vs. the palette). */
+    private val tolerance: Int = 0
 ) {
     private val out = BufferedOutputStream(outputStream)
     private var started = false
     private var wroteHeader = false
+    private var previous: ByteArray? = null
 
     fun start() {
         if (started) return
@@ -30,48 +34,78 @@ class GifEncoder(
 
     /** Appends one frame. [delayCs] is the frame delay in hundredths of a second. */
     fun writeFrame(bitmap: Bitmap, delayCs: Int) {
-        check(started) { "start() not called" }
         val frame = if (bitmap.width != width || bitmap.height != height) {
             Bitmap.createScaledBitmap(bitmap, width, height, true)
         } else bitmap
-
         val pixels = IntArray(width * height)
         frame.getPixels(pixels, 0, width, 0, 0, width, height)
+        if (frame !== bitmap) frame.recycle()
+        writePixels(pixels, delayCs)
+    }
 
-        // NeuQuant expects a packed RGB byte stream.
-        val rgb = ByteArray(pixels.size * 3)
-        for (i in pixels.indices) {
-            val p = pixels[i]
-            rgb[i * 3] = ((p shr 16) and 0xff).toByte()
-            rgb[i * 3 + 1] = ((p shr 8) and 0xff).toByte()
-            rgb[i * 3 + 2] = (p and 0xff).toByte()
+    /** Appends one frame given as [width]x[height] ARGB pixels (alpha ignored). */
+    fun writePixels(argb: IntArray, delayCs: Int) {
+        check(started) { "start() not called" }
+        require(argb.size == width * height) { "expected ${width * height} pixels, got ${argb.size}" }
+
+        val current = ByteArray(argb.size)
+        for (i in argb.indices) {
+            val p = argb[i]
+            current[i] = palette.indexOf((p shr 16) and 0xff, (p shr 8) and 0xff, p and 0xff).toByte()
         }
 
-        val quant = MedianCutQuantizer(rgb, 256)
-        val colorTab = quant.process()
-
-        val indices = ByteArray(pixels.size)
-        for (i in pixels.indices) {
-            val p = pixels[i]
-            val r = (p shr 16) and 0xff
-            val g = (p shr 8) and 0xff
-            val b = p and 0xff
-            indices[i] = quant.map(r, g, b).toByte()
-        }
-
-        if (!wroteHeader) {
+        val prev = previous
+        if (prev == null) {
             writeHeader()
-            writeLogicalScreenDescriptor(colorTab)
+            writeLogicalScreenDescriptor()
             writeNetscapeExtension()
             wroteHeader = true
+            writeGraphicControlExtension(delayCs, transparent = false)
+            writeImageDescriptor(0, 0, width, height)
+            writeImageData(current, width, height)
+            previous = current
+            return
         }
 
-        writeGraphicControlExtension(delayCs)
-        writeImageDescriptor()
-        writeLocalColorTable(colorTab)
-        writeImageData(indices)
+        val tol2 = tolerance * tolerance
+        var minX = width; var minY = height; var maxX = -1; var maxY = -1
+        for (y in 0 until height) {
+            val row = y * width
+            for (x in 0 until width) {
+                val i = row + x
+                if (!palette.sameWithin(prev[i].toInt() and 0xff, current[i].toInt() and 0xff, tol2)) {
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
 
-        if (frame !== bitmap) frame.recycle()
+        writeGraphicControlExtension(delayCs, transparent = true)
+        if (maxX < 0) {
+            // Nothing visibly changed: a 1x1 transparent frame just carries the delay.
+            writeImageDescriptor(0, 0, 1, 1)
+            writeImageData(byteArrayOf(GifPalette.TRANSPARENT.toByte()), 1, 1)
+            return
+        }
+
+        val bw = maxX - minX + 1
+        val bh = maxY - minY + 1
+        val sub = ByteArray(bw * bh)
+        for (y in 0 until bh) {
+            for (x in 0 until bw) {
+                val i = (minY + y) * width + (minX + x)
+                if (palette.sameWithin(prev[i].toInt() and 0xff, current[i].toInt() and 0xff, tol2)) {
+                    sub[y * bw + x] = GifPalette.TRANSPARENT.toByte()
+                } else {
+                    sub[y * bw + x] = current[i]
+                    prev[i] = current[i]
+                }
+            }
+        }
+        writeImageDescriptor(minX, minY, bw, bh)
+        writeImageData(sub, bw, bh)
     }
 
     fun finish() {
@@ -84,14 +118,14 @@ class GifEncoder(
         out.write("GIF89a".toByteArray(Charsets.US_ASCII))
     }
 
-    private fun writeLogicalScreenDescriptor(colorTab: ByteArray) {
+    private fun writeLogicalScreenDescriptor() {
         writeShort(width)
         writeShort(height)
         // Global color table present, 256 entries (2^(7+1)), color resolution 8 bit.
         out.write(0xf7)
         out.write(0) // background color index
         out.write(0) // pixel aspect ratio
-        writePaddedColorTable(colorTab)
+        out.write(palette.table, 0, palette.table.size)
     }
 
     private fun writeNetscapeExtension() {
@@ -105,39 +139,28 @@ class GifEncoder(
         out.write(0)
     }
 
-    private fun writeGraphicControlExtension(delayCs: Int) {
+    private fun writeGraphicControlExtension(delayCs: Int, transparent: Boolean) {
         out.write(0x21)
         out.write(0xf9)
         out.write(4)
-        out.write(0x00) // no transparency, no disposal specified
+        // Disposal 1 (leave in place) so later frames can be deltas over this one.
+        out.write(0x04 or if (transparent) 0x01 else 0x00)
         writeShort(delayCs)
-        out.write(0) // transparent color index (unused)
+        out.write(GifPalette.TRANSPARENT)
         out.write(0) // block terminator
     }
 
-    private fun writeImageDescriptor() {
+    private fun writeImageDescriptor(left: Int, top: Int, w: Int, h: Int) {
         out.write(0x2c) // image separator
-        writeShort(0) // left
-        writeShort(0) // top
-        writeShort(width)
-        writeShort(height)
-        out.write(0x87) // local color table present, 256 entries
+        writeShort(left)
+        writeShort(top)
+        writeShort(w)
+        writeShort(h)
+        out.write(0x00) // no local color table; the global one applies
     }
 
-    private fun writePaddedColorTable(colorTab: ByteArray) {
-        out.write(colorTab, 0, colorTab.size)
-        val pad = 256 * 3 - colorTab.size
-        for (i in 0 until pad) out.write(0)
-    }
-
-    private fun writeLocalColorTable(colorTab: ByteArray) {
-        writePaddedColorTable(colorTab)
-    }
-
-    private fun writeImageData(indices: ByteArray) {
-        val minCodeSize = 8
-        val encoder = LzwEncoder(width, height, indices, minCodeSize)
-        encoder.encode(out)
+    private fun writeImageData(indices: ByteArray, w: Int, h: Int) {
+        LzwEncoder(w, h, indices, 8).encode(out)
     }
 
     private fun writeShort(value: Int) {

@@ -119,8 +119,23 @@ class MedianCutQuantizer(pixels: ByteArray, private val maxColors: Int = 256) {
         return map
     }
 
+    // Direct-mapped cache keyed on the exact colour: video frames repeat colours heavily, and the
+    // linear palette scan below is the hot loop when mapping every pixel of every frame.
+    private val cacheKeys = IntArray(CACHE_SIZE) { -1 }
+    private val cacheValues = ByteArray(CACHE_SIZE)
+
     /** Nearest palette index for a true (r, g, b) triple. */
     fun map(r: Int, g: Int, b: Int): Int {
+        val key = (r shl 16) or (g shl 8) or b
+        val slot = (key * -1640531535 ushr (32 - CACHE_BITS))
+        if (cacheKeys[slot] == key) return cacheValues[slot].toInt() and 0xff
+        val best = nearest(r, g, b)
+        cacheKeys[slot] = key
+        cacheValues[slot] = best.toByte()
+        return best
+    }
+
+    private fun nearest(r: Int, g: Int, b: Int): Int {
         var best = 0
         var bestDist = Int.MAX_VALUE
         for (idx in palette.indices) {
@@ -137,4 +152,9 @@ class MedianCutQuantizer(pixels: ByteArray, private val maxColors: Int = 256) {
 
     private val pixelsArr = pixels
     private val pixelsLen = pixels.size
+
+    private companion object {
+        const val CACHE_BITS = 16
+        const val CACHE_SIZE = 1 shl CACHE_BITS
+    }
 }

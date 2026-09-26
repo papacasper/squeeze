@@ -70,8 +70,9 @@ class CompressionService : Service() {
         val toGif = intent.getBooleanExtra(EXTRA_TO_GIF, false)
         val trimStartMs = intent.getLongExtra(EXTRA_TRIM_START, 0L)
         val trimDurationMs = intent.getLongExtra(EXTRA_TRIM_DURATION, 0L)
+        val trimmed = intent.getBooleanExtra(EXTRA_TRIMMED, false)
 
-        start(uri, mime, originalBytes, targetBytes, targetLabel, toGif, trimStartMs, trimDurationMs)
+        start(uri, mime, originalBytes, targetBytes, targetLabel, toGif, trimStartMs, trimDurationMs, trimmed)
         return START_NOT_STICKY
     }
 
@@ -83,7 +84,8 @@ class CompressionService : Service() {
         targetLabel: String,
         toGif: Boolean,
         trimStartMs: Long,
-        trimDurationMs: Long
+        trimDurationMs: Long,
+        trimmed: Boolean
     ) {
         createChannel()
         val isVideo = mime.startsWith("video")
@@ -140,7 +142,11 @@ class CompressionService : Service() {
                         videoToGif -> VideoToGifConverter.convert(applicationContext, uri, targetBytes, outFile, trimStartMs, trimDurationMs) { msg, fraction ->
                             onProgress(msg, fraction)
                         }
-                        isVideo -> VideoCompressor.compress(applicationContext, uri, targetBytes, outFile) { msg, fraction ->
+                        isVideo -> VideoCompressor.compress(
+                            applicationContext, uri, targetBytes, outFile,
+                            trimStartMs = if (trimmed) trimStartMs else 0L,
+                            trimDurationMs = if (trimmed) trimDurationMs else 0L
+                        ) { msg, fraction ->
                             onProgress(msg, fraction)
                         }
                         isGif -> GifCompressor.compress(applicationContext, uri, targetBytes, outFile) { msg, fraction ->
@@ -237,6 +243,7 @@ class CompressionService : Service() {
         private const val EXTRA_TO_GIF = "to_gif"
         private const val EXTRA_TRIM_START = "trim_start"
         private const val EXTRA_TRIM_DURATION = "trim_duration"
+        private const val EXTRA_TRIMMED = "trimmed"
 
         fun start(
             context: Context,
@@ -247,7 +254,8 @@ class CompressionService : Service() {
             targetLabel: String,
             toGif: Boolean,
             trimStartMs: Long,
-            trimDurationMs: Long
+            trimDurationMs: Long,
+            trimmed: Boolean = false
         ) {
             val intent = Intent(context, CompressionService::class.java)
                 .putExtra(EXTRA_URI, uri)
@@ -258,6 +266,7 @@ class CompressionService : Service() {
                 .putExtra(EXTRA_TO_GIF, toGif)
                 .putExtra(EXTRA_TRIM_START, trimStartMs)
                 .putExtra(EXTRA_TRIM_DURATION, trimDurationMs)
+                .putExtra(EXTRA_TRIMMED, trimmed)
             context.startForegroundService(intent)
         }
 

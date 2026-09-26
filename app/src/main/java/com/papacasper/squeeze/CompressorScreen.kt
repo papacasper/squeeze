@@ -49,7 +49,7 @@ private const val SKIP_COMPRESSION_THRESHOLD_BYTES = 20L * 1024 * 1024
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CompressorScreen(initialUri: Uri? = null) {
+fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
     val context = LocalContext.current
     val vm: CompressorViewModel = viewModel()
     val state = vm.state
@@ -69,6 +69,7 @@ fun CompressorScreen(initialUri: Uri? = null) {
     ) { }
 
     LaunchedEffect(initialUri) { vm.onInitialUri(initialUri) }
+    LaunchedEffect(initialUrl) { vm.onInitialUrl(initialUrl) }
 
     val pickLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) vm.selectFile(uri)
@@ -177,12 +178,12 @@ fun CompressorScreen(initialUri: Uri? = null) {
                 }
 
                 is UiState.FileSelected -> {
-                    val needsTrim = vm.convertToGif && vm.videoDurationMs > VideoToGifConverter.MAX_DURATION_MS
+                    val canTrim = s.mime.startsWith("video") && vm.videoDurationMs > 2 * TrimMath.MIN_CLIP_MS
                     if (s.mime.startsWith("video")) {
                         VideoPreviewPlayer(
                             uri = s.uri,
-                            trimStartMs = if (needsTrim) vm.trimStartMs else 0L,
-                            trimEndMs = if (needsTrim) vm.trimEndMs else vm.videoDurationMs.coerceAtLeast(1L)
+                            trimStartMs = if (canTrim) vm.trimStartMs else 0L,
+                            trimEndMs = if (canTrim) vm.trimEndMs else vm.videoDurationMs.coerceAtLeast(1L)
                         )
                     } else {
                         ThumbnailPreview(s.thumbnail)
@@ -230,16 +231,17 @@ fun CompressorScreen(initialUri: Uri? = null) {
                     if (s.mime.startsWith("video")) {
                         VideoModeToggle(
                             convertToGif = vm.convertToGif,
-                            onChange = { vm.convertToGif = it }
+                            onChange = { vm.setGifMode(it) }
                         )
                     }
-                    if (needsTrim) {
+                    if (canTrim) {
                         VideoTrimFilmstrip(
                             uri = s.uri,
                             durationMs = vm.videoDurationMs,
                             trimStartMs = vm.trimStartMs,
                             trimEndMs = vm.trimEndMs,
-                            onTrimChange = { start, end -> vm.trimStartMs = start; vm.trimEndMs = end }
+                            maxClipMs = if (vm.convertToGif) VideoToGifConverter.MAX_DURATION_MS else Long.MAX_VALUE,
+                            onTrimChange = { start, end -> vm.setTrim(start, end) }
                         )
                     }
                     PresetButtons(enabled = true) { preset ->

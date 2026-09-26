@@ -63,13 +63,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val sharedUri = extractSharedUri(intent)
+        val sharedUrl = if (sharedUri == null) extractSharedUrl(intent) else null
         setContent {
             SqueezeTheme {
                 Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
-                    CompressorScreen(initialUri = sharedUri)
+                    CompressorScreen(initialUri = sharedUri, initialUrl = sharedUrl)
                 }
             }
         }
+    }
+
+    private fun extractSharedUrl(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return null
+        return SharedText.firstUrl(intent.getStringExtra(Intent.EXTRA_TEXT))
     }
 
     private fun extractSharedUri(intent: Intent?): Uri? {

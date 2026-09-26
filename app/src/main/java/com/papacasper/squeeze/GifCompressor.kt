@@ -14,13 +14,15 @@ import java.nio.ByteBuffer
 
 object GifCompressor {
 
-    private const val MAX_ATTEMPTS = 6
+    private const val MAX_ATTEMPTS = 8
     private const val MIN_WIDTH = 120
+    private const val PALETTE_SAMPLE_FRAMES = 12
 
     /**
-     * Decodes an existing animated GIF, then re-encodes it at reduced resolution and/or
-     * frame rate (dropping frames while preserving overall playback duration) until the
-     * output is at or under targetBytes or the retry budget is exhausted.
+     * Decodes an existing animated GIF, then re-encodes it with one shared palette and delta
+     * frames, shrinking resolution (after a lossy-tolerance step) until the output is at or
+     * under targetBytes or the retry budget is exhausted. Every frame and its timing is kept:
+     * the frame rate is never reduced to save bytes.
      */
     suspend fun compress(
         context: Context,
@@ -38,8 +40,16 @@ object GifCompressor {
         val srcWidth = frames[0].first.width
         val srcHeight = frames[0].first.height
 
+        // Palette is built once, at source resolution, and reused by every retry.
+        val palette = GifPalette.build(
+            GifPalette.sampleIndices(frames.size, PALETTE_SAMPLE_FRAMES).map { i ->
+                val bmp = frames[i].first
+                IntArray(bmp.width * bmp.height).also { bmp.getPixels(it, 0, bmp.width, 0, 0, bmp.width, bmp.height) }
+            }
+        )
+
         var width = srcWidth
-        var frameStep = 1
+        var toleranceIndex = 0
         var bestFile: File? = null
         var bestBytes = Long.MAX_VALUE
 
@@ -50,17 +60,12 @@ object GifCompressor {
                 val height = (width.toDouble() / srcWidth * srcHeight).toInt().coerceAtLeast(2)
                 val widthEven = width - width % 2
                 val heightEven = height - height % 2
-                onProgress(
-                    "Re-encoding GIF: ${widthEven}x$heightEven (attempt $attempt/$MAX_ATTEMPTS)...",
-                    passBase
-                )
+                val label = "Re-encoding GIF: ${widthEven}x$heightEven (attempt $attempt/$MAX_ATTEMPTS)..."
+                onProgress(label, passBase)
 
                 val passFile = File(outputFile.parentFile, "gifcpass${attempt}_${outputFile.name}")
-                encodePass(frames, frameStep, widthEven, heightEven, passFile) { fraction ->
-                    onProgress(
-                        "Re-encoding GIF: ${widthEven}x$heightEven (attempt $attempt/$MAX_ATTEMPTS)...",
-                        passBase + fraction / MAX_ATTEMPTS
-                    )
+                encodePass(frames, palette, GifMath.TOLERANCES[toleranceIndex], widthEven, heightEven, passFile) { fraction ->
+                    onProgress(label, passBase + fraction / MAX_ATTEMPTS)
                 }
 
                 val passBytes = passFile.length()
@@ -73,16 +78,13 @@ object GifCompressor {
                 }
 
                 if (passBytes in 1..targetBytes) break
-                if (width <= MIN_WIDTH && frameStep >= frames.size) {
+                val next = GifMath.nextStep(width, toleranceIndex, passBytes, targetBytes, MIN_WIDTH)
+                if (next == null) {
                     onProgress("Reached minimum quality; can't shrink further.", 1f)
                     break
                 }
-
-                if (attempt % 2 == 1 && width > MIN_WIDTH) {
-                    width = (width * 0.75).toInt().coerceAtLeast(MIN_WIDTH)
-                } else {
-                    frameStep = (frameStep + 1).coerceAtMost(frames.size)
-                }
+                width = next.width
+                toleranceIndex = next.toleranceIndex
             }
         } finally {
             frames.forEach { it.first.recycle() }
@@ -98,35 +100,26 @@ object GifCompressor {
 
     private suspend fun encodePass(
         frames: List<Pair<Bitmap, Int>>,
-        frameStep: Int,
+        palette: GifPalette,
+        tolerance: Int,
         width: Int,
         height: Int,
         outFile: File,
         onProgress: (Float) -> Unit
     ) {
         if (outFile.exists()) outFile.delete()
-        val selected = frames.indices.filter { it % frameStep == 0 }
         FileOutputStream(outFile).use { fos ->
-            val encoder = GifEncoder(fos, width, height, loopCount = 0)
+            val encoder = GifEncoder(fos, width, height, loopCount = 0, palette = palette, tolerance = tolerance)
             encoder.start()
             try {
-                selected.forEachIndexed { idx, frameIdx ->
+                frames.forEachIndexed { idx, (bmp, delayMs) ->
                     currentCoroutineContext().ensureActive()
-                    val (bmp, delayMs) = frames[frameIdx]
-                    // Fold the skipped frames' delay into this one so playback speed is preserved.
-                    val nextSelectedIdx = selected.getOrNull(idx + 1) ?: frames.size
-                    var combinedDelayMs = delayMs
-                    for (skipped in (frameIdx + 1) until nextSelectedIdx) {
-                        combinedDelayMs += frames[skipped].second
-                    }
-                    val delayCs = (combinedDelayMs / 10).coerceAtLeast(1)
-
                     val scaled = if (bmp.width != width || bmp.height != height) {
                         Bitmap.createScaledBitmap(bmp, width, height, true)
                     } else bmp
-                    encoder.writeFrame(scaled, delayCs)
+                    encoder.writeFrame(scaled, (delayMs / 10).coerceAtLeast(1))
                     if (scaled !== bmp) scaled.recycle()
-                    onProgress((idx + 1).toFloat() / selected.size)
+                    onProgress((idx + 1).toFloat() / frames.size)
                 }
             } finally {
                 encoder.finish()

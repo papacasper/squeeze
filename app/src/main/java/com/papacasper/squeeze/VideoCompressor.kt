@@ -55,17 +55,25 @@ object VideoCompressor {
         sourceUri: Uri,
         targetBytes: Long,
         outputFile: File,
+        trimStartMs: Long = 0L,
+        trimDurationMs: Long = 0L,
         onProgress: (String, Float) -> Unit
     ): File {
-        val durationMs = getDurationMs(context, sourceUri)
+        val fullDurationMs = getDurationMs(context, sourceUri)
+        val trimmed = trimDurationMs > 0L
+        val durationMs = if (trimmed) trimDurationMs else fullDurationMs
         val durationSec = (durationMs / 1000.0).coerceAtLeast(1.0)
         val originalHeight = getVideoHeight(context, sourceUri)
 
         // Audio is passed through untouched, so its size is fixed: budget it explicitly, then give
         // the video what's left of ~92% of the target (the rest covers container overhead).
         val audioBytes = estimateAudioBitrate(context, sourceUri) * durationSec / 8.0
-        val sourceBytes = context.contentResolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length }
+        val fileBytes = context.contentResolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length }
             ?.takeIf { it > 0 } ?: Long.MAX_VALUE
+        // For a trimmed clip, only that share of the source's bytes is comparable to the output.
+        val sourceBytes = if (trimmed && fileBytes != Long.MAX_VALUE) {
+            (fileBytes * (durationMs.toDouble() / fullDurationMs.coerceAtLeast(1L))).toLong().coerceAtLeast(1L)
+        } else fileBytes
         // A source already under the target must come out smaller than itself, not merely under the target.
         val goalBytes = if (sourceBytes <= targetBytes) (sourceBytes * 0.9).toLong() else targetBytes
         var bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes, sourceBytes)
@@ -86,7 +94,7 @@ object VideoCompressor {
             val passFile = File(outputFile.parentFile, "pass${attempt}_${outputFile.name}")
             try {
                 try {
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/hevc") { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
                             "Encoding pass $attempt of $MAX_ATTEMPTS (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
                             passBase + intraFraction / MAX_ATTEMPTS
@@ -98,7 +106,7 @@ object VideoCompressor {
                         "Encoder stalled, retrying pass $attempt with H.264...",
                         passBase
                     )
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/avc") { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
                             "Encoding pass $attempt of $MAX_ATTEMPTS (target ${bitrate / 1000} kbps, ${targetHeight}p, H.264)...",
                             passBase + intraFraction / MAX_ATTEMPTS
@@ -159,6 +167,8 @@ object VideoCompressor {
         targetHeight: Int,
         originalHeight: Int,
         videoMimeType: String,
+        trimStartMs: Long,
+        trimDurationMs: Long,
         onPassProgress: (Float) -> Unit
     ) {
         if (outFile.exists()) outFile.delete()
@@ -196,7 +206,16 @@ object VideoCompressor {
                 })
                 .build()
 
-            val mediaItem = MediaItem.fromUri(sourceUri)
+            val mediaItem = MediaItem.Builder().setUri(sourceUri).apply {
+                if (trimDurationMs > 0L) {
+                    setClippingConfiguration(
+                        MediaItem.ClippingConfiguration.Builder()
+                            .setStartPositionMs(trimStartMs)
+                            .setEndPositionMs(trimStartMs + trimDurationMs)
+                            .build()
+                    )
+                }
+            }.build()
             val itemBuilder = EditedMediaItem.Builder(mediaItem)
             if (targetHeight < originalHeight) {
                 itemBuilder.setEffects(

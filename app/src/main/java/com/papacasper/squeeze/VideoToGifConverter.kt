@@ -2,23 +2,29 @@ package com.papacasper.squeeze
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.roundToInt
 
 object VideoToGifConverter {
 
-    private const val MAX_ATTEMPTS = 6
-    private const val MIN_FPS = 15
+    private const val MAX_ATTEMPTS = 8
     private const val MIN_WIDTH = 160
+    private const val START_WIDTH = 480
+    // Fixed for every pass: size is recovered through palette/delta/resolution, never by dropping frames.
+    private const val FPS = 30
+    private const val PALETTE_SAMPLE_FRAMES = 12
+    private const val FRAME_CACHE_QUALITY = 95
+    // Share of the progress bar taken by the one-time frame extraction.
+    private const val EXTRACT_SHARE = 0.25f
     // GIFs get huge fast with length; cap the clip so output stays usable. Longer source
     // videos are trimmed via [trimStartMs] rather than converted in full.
     const val MAX_DURATION_MS = 30_000L
-
-    private data class Params(val fps: Int, val width: Int)
 
     /**
      * Samples frames from the source video and encodes them as an animated GIF, retrying
@@ -57,99 +63,148 @@ object VideoToGifConverter {
             retriever.release()
         }
 
-        var fps = 30
-        var width = srcWidth.coerceAtMost(480)
-        var bestFile: File? = null
-        var bestBytes = Long.MAX_VALUE
+        val width0 = (srcWidth.coerceAtMost(START_WIDTH)).let { it - it % 2 }
+        val height0 = heightFor(width0, srcWidth, srcHeight)
 
-        for (attempt in 1..MAX_ATTEMPTS) {
-            currentCoroutineContext().ensureActive()
-            val passBase = (attempt - 1).toFloat() / MAX_ATTEMPTS
-            val height = (width.toDouble() / srcWidth * srcHeight).toInt().coerceAtLeast(2).let { it - it % 2 }
-            val widthEven = width - width % 2
-            onProgress("Rendering GIF: ${widthEven}x$height @ ${fps}fps (attempt $attempt/$MAX_ATTEMPTS)...", passBase)
+        // Frames are decoded from the video exactly once, cached as JPEGs, and reused by every
+        // retry; only scaling and encoding repeat. The palette is likewise built once.
+        val cacheDir = File(outputFile.parentFile, "gifframes").apply { deleteRecursively(); mkdirs() }
+        try {
+            val frameFiles = extractFrames(context, sourceUri, trimStartMs, durationMs, width0, height0, cacheDir) {
+                onProgress("Reading video frames...", it * EXTRACT_SHARE)
+            }
+            if (frameFiles.isEmpty()) throw IllegalStateException("Couldn't read any frames from the video")
+            val palette = buildPalette(frameFiles)
+            val delayCs = (100.0 / FPS).roundToInt().coerceAtLeast(2)
 
-            val passFile = File(outputFile.parentFile, "gifpass${attempt}_${outputFile.name}")
-            renderGif(context, sourceUri, trimStartMs, durationMs, fps, widthEven, height, passFile) { fraction ->
-                onProgress(
-                    "Rendering GIF: ${widthEven}x$height @ ${fps}fps (attempt $attempt/$MAX_ATTEMPTS)...",
-                    passBase + fraction / MAX_ATTEMPTS
-                )
+            var width = width0
+            var toleranceIndex = 0
+            var bestFile: File? = null
+            var bestBytes = Long.MAX_VALUE
+
+            for (attempt in 1..MAX_ATTEMPTS) {
+                currentCoroutineContext().ensureActive()
+                val passBase = EXTRACT_SHARE + (1f - EXTRACT_SHARE) * (attempt - 1) / MAX_ATTEMPTS
+                val height = heightFor(width, srcWidth, srcHeight)
+                val label = "Rendering GIF: ${width}x$height @ ${FPS}fps (attempt $attempt/$MAX_ATTEMPTS)..."
+                onProgress(label, passBase)
+
+                val passFile = File(outputFile.parentFile, "gifpass${attempt}_${outputFile.name}")
+                renderGif(frameFiles, palette, GifMath.TOLERANCES[toleranceIndex], delayCs, width, height, passFile) { fraction ->
+                    onProgress(label, passBase + (1f - EXTRACT_SHARE) * fraction / MAX_ATTEMPTS)
+                }
+
+                val passBytes = passFile.length()
+                if (passBytes in 1 until bestBytes) {
+                    bestFile?.delete()
+                    bestFile = passFile
+                    bestBytes = passBytes
+                } else {
+                    passFile.delete()
+                }
+
+                if (passBytes in 1..targetBytes) break
+                val next = GifMath.nextStep(width, toleranceIndex, passBytes, targetBytes, MIN_WIDTH)
+                if (next == null) {
+                    onProgress("Reached minimum quality; can't shrink further.", 1f)
+                    break
+                }
+                width = next.width
+                toleranceIndex = next.toleranceIndex
             }
 
-            val passBytes = passFile.length()
-            if (passBytes in 1 until bestBytes) {
-                bestFile?.delete()
-                bestFile = passFile
-                bestBytes = passBytes
-            } else {
-                passFile.delete()
+            val result = bestFile ?: throw IllegalStateException("GIF conversion failed to produce output")
+            if (result != outputFile) {
+                result.copyTo(outputFile, overwrite = true)
+                result.delete()
             }
-
-            if (passBytes in 1..targetBytes) break
-            if (fps <= MIN_FPS && width <= MIN_WIDTH) {
-                onProgress("Reached minimum quality; can't shrink further.", 1f)
-                break
-            }
-
-            // Alternate shrinking resolution and frame rate; both roughly linearly affect size.
-            if (attempt % 2 == 1 && width > MIN_WIDTH) {
-                width = (width * 0.75).toInt().coerceAtLeast(MIN_WIDTH)
-            } else if (fps > MIN_FPS) {
-                fps = (fps * 0.75).toInt().coerceAtLeast(MIN_FPS)
-            } else if (width > MIN_WIDTH) {
-                width = (width * 0.75).toInt().coerceAtLeast(MIN_WIDTH)
-            }
+            return outputFile
+        } finally {
+            cacheDir.deleteRecursively()
         }
-
-        val result = bestFile ?: throw IllegalStateException("GIF conversion failed to produce output")
-        if (result != outputFile) {
-            result.copyTo(outputFile, overwrite = true)
-            result.delete()
-        }
-        return outputFile
     }
 
-    private suspend fun renderGif(
+    private fun heightFor(width: Int, srcWidth: Int, srcHeight: Int): Int =
+        (width.toDouble() / srcWidth * srcHeight).toInt().coerceAtLeast(2).let { it - it % 2 }
+
+    private suspend fun extractFrames(
         context: Context,
         sourceUri: Uri,
         trimStartMs: Long,
         durationMs: Long,
-        fps: Int,
+        width: Int,
+        height: Int,
+        cacheDir: File,
+        onProgress: (Float) -> Unit
+    ): List<File> {
+        val retriever = MediaMetadataRetriever()
+        val files = mutableListOf<File>()
+        try {
+            retriever.setDataSource(context, sourceUri)
+            val frameCount = ((durationMs / 1000.0) * FPS).toInt().coerceAtLeast(1)
+            for (i in 0 until frameCount) {
+                currentCoroutineContext().ensureActive()
+                val timeUs = trimStartMs * 1000L + (i * 1_000_000L / FPS)
+                // OPTION_CLOSEST decodes the exact frame at timeUs; OPTION_CLOSEST_SYNC
+                // snaps to the nearest keyframe instead, which with typical ~1-2s keyframe
+                // intervals collapses most requested timestamps onto the same frame and
+                // makes playback look choppy/stuttery.
+                val frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                if (frame != null) {
+                    val scaled = if (frame.width != width || frame.height != height) {
+                        Bitmap.createScaledBitmap(frame, width, height, true)
+                    } else frame
+                    val file = File(cacheDir, "f%05d.jpg".format(i))
+                    file.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, FRAME_CACHE_QUALITY, it) }
+                    files.add(file)
+                    if (scaled !== frame) scaled.recycle()
+                    frame.recycle()
+                }
+                onProgress((i + 1).toFloat() / frameCount)
+            }
+        } finally {
+            retriever.release()
+        }
+        return files
+    }
+
+    private fun buildPalette(frameFiles: List<File>): GifPalette {
+        val samples = GifPalette.sampleIndices(frameFiles.size, PALETTE_SAMPLE_FRAMES).mapNotNull { i ->
+            BitmapFactory.decodeFile(frameFiles[i].absolutePath)?.let { bmp ->
+                IntArray(bmp.width * bmp.height).also {
+                    bmp.getPixels(it, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+                    bmp.recycle()
+                }
+            }
+        }
+        return GifPalette.build(samples)
+    }
+
+    private suspend fun renderGif(
+        frameFiles: List<File>,
+        palette: GifPalette,
+        tolerance: Int,
+        delayCs: Int,
         width: Int,
         height: Int,
         outFile: File,
         onProgress: (Float) -> Unit
     ) {
         if (outFile.exists()) outFile.delete()
-        val retriever = MediaMetadataRetriever()
         FileOutputStream(outFile).use { fos ->
-            val encoder = GifEncoder(fos, width, height, loopCount = 0)
+            val encoder = GifEncoder(fos, width, height, loopCount = 0, palette = palette, tolerance = tolerance)
             encoder.start()
             try {
-                retriever.setDataSource(context, sourceUri)
-                val frameCount = ((durationMs / 1000.0) * fps).toInt().coerceAtLeast(1)
-                val delayCs = (100.0 / fps).toInt().coerceAtLeast(1)
-                for (i in 0 until frameCount) {
+                frameFiles.forEachIndexed { i, file ->
                     currentCoroutineContext().ensureActive()
-                    val timeUs = trimStartMs * 1000L + (i * 1_000_000L / fps)
-                    // OPTION_CLOSEST decodes the exact frame at timeUs; OPTION_CLOSEST_SYNC
-                    // snaps to the nearest keyframe instead, which with typical ~1-2s keyframe
-                    // intervals collapses most requested timestamps onto the same frame and
-                    // makes playback look choppy/stuttery.
-                    val frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                    val frame = BitmapFactory.decodeFile(file.absolutePath)
                     if (frame != null) {
-                        val scaled = if (frame.width != width || frame.height != height) {
-                            Bitmap.createScaledBitmap(frame, width, height, true)
-                        } else frame
-                        encoder.writeFrame(scaled, delayCs)
-                        if (scaled !== frame) scaled.recycle()
+                        encoder.writeFrame(frame, delayCs)  // scales to width x height if needed
                         frame.recycle()
                     }
-                    onProgress((i + 1).toFloat() / frameCount)
+                    onProgress((i + 1).toFloat() / frameFiles.size)
                 }
             } finally {
-                retriever.release()
                 encoder.finish()
             }
         }

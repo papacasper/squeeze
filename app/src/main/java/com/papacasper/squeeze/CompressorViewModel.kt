@@ -47,14 +47,18 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         private set
     var customSliderFraction by mutableStateOf(0.3f)
     var convertToGif by mutableStateOf(false)
+        private set
     var videoDurationMs by mutableStateOf(0L)
         private set
     var trimStartMs by mutableStateOf(0L)
+        private set
     var trimEndMs by mutableStateOf(0L)
+        private set
     var downloadUrl by mutableStateOf("")
 
     private var workingThumbnail: Bitmap? = null
     private var handledInitialUri: Uri? = null
+    private var handledInitialUrl: String? = null
 
     init {
         // Done/Failed are one-shot results: once shown they're reset to Idle so a later
@@ -100,6 +104,13 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         }
     }
 
+    /** A link shared into the app pre-fills the download field; the user still taps Download. */
+    fun onInitialUrl(url: String?) {
+        if (url == null || url == handledInitialUrl) return
+        handledInitialUrl = url
+        downloadUrl = url
+    }
+
     /** Handles the Uri the app was launched/shared with, once. */
     fun onInitialUri(uri: Uri?) {
         if (uri == null || uri == handledInitialUri) return
@@ -133,9 +144,25 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
             viewModelScope.launch {
                 val duration = withContext(Dispatchers.IO) { queryVideoDurationMs(context, uri) }
                 videoDurationMs = duration
-                trimEndMs = duration.coerceAtMost(VideoToGifConverter.MAX_DURATION_MS)
+                trimEndMs = duration
             }
         }
+    }
+
+    /** GIF output is capped at [VideoToGifConverter.MAX_DURATION_MS], so switching to it shortens the window. */
+    fun setGifMode(enabled: Boolean) {
+        convertToGif = enabled
+        if (enabled) setTrim(trimStartMs, trimEndMs)
+    }
+
+    fun setTrim(startMs: Long, endMs: Long) {
+        val (start, end) = if (convertToGif) {
+            TrimMath.capLength(startMs, endMs, VideoToGifConverter.MAX_DURATION_MS)
+        } else {
+            startMs to endMs
+        }
+        trimStartMs = start
+        trimEndMs = end
     }
 
     /** Starts the compression service for [file]; false if one is already running. */
@@ -155,7 +182,8 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         )
         CompressionService.start(
             getApplication(), file.uri, file.mime, file.originalBytes, targetBytes, targetLabel,
-            convertToGif, trimStartMs, trimEndMs - trimStartMs
+            convertToGif, trimStartMs, trimEndMs - trimStartMs,
+            trimmed = TrimMath.isTrimmed(trimStartMs, trimEndMs, videoDurationMs)
         )
         return true
     }
