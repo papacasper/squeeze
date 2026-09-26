@@ -1,6 +1,5 @@
 package com.papacasper.squeeze
 
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.BackHandler
@@ -37,59 +36,24 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 private const val SKIP_COMPRESSION_THRESHOLD_BYTES = 20L * 1024 * 1024
-
-private sealed class UiState {
-    data object Idle : UiState()
-    data class FileSelected(val uri: Uri, val mime: String, val originalBytes: Long, val thumbnail: Bitmap?) : UiState()
-    data class Working(
-        val originalBytes: Long,
-        val message: String,
-        val progress: Float,
-        val indeterminate: Boolean,
-        val thumbnail: Bitmap?,
-        val uri: Uri,
-        val mime: String
-    ) : UiState()
-    data class Done(
-        val originalBytes: Long,
-        val resultFile: File,
-        val mime: String,
-        val fitsTarget: Boolean,
-        val targetLabel: String,
-        val suggestedName: String
-    ) : UiState()
-    data class Failed(val message: String) : UiState()
-    data class Downloading(val message: String, val progress: Float) : UiState()
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CompressorScreen(initialUri: Uri? = null) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf<UiState>(UiState.Idle) }
-    var workingThumbnail by remember { mutableStateOf<Bitmap?>(null) }
+    val vm: CompressorViewModel = viewModel()
+    val state = vm.state
     var showHistory by remember { mutableStateOf(false) }
-    var customSliderFraction by remember { mutableStateOf(0.3f) }
-    var convertToGif by remember { mutableStateOf(false) }
-    var videoDurationMs by remember { mutableStateOf(0L) }
-    var trimStartMs by remember { mutableStateOf(0L) }
-    var trimEndMs by remember { mutableStateOf(0L) }
-    var downloadUrl by remember { mutableStateOf("") }
 
     fun toast(message: String) = android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
     fun saveOrToast(action: () -> Unit) {
@@ -104,123 +68,20 @@ fun CompressorScreen(initialUri: Uri? = null) {
         ActivityResultContracts.RequestPermission()
     ) { }
 
-    // Compression runs in CompressionService (a foreground service) so it survives the app
-    // being backgrounded or its process being reclaimed; this just mirrors that shared state
-    // into the local UiState the screen renders. Done/Failed are one-shot results: once shown
-    // they're reset to Idle so a later launch or recomposition doesn't replay them.
-    LaunchedEffect(Unit) {
-        CompressionRepository.state.collect { s ->
-            when (s) {
-                is CompressionState.Working -> state = UiState.Working(
-                    s.originalBytes, s.message, s.progress, s.indeterminate, workingThumbnail, s.uri, s.mime
-                )
-                is CompressionState.Done -> {
-                    if (s.resultFile.exists()) {
-                        state = UiState.Done(
-                            s.originalBytes, s.resultFile, s.mime, s.fitsTarget, s.targetLabel, s.suggestedName
-                        )
-                    }
-                    CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
-                }
-                is CompressionState.Failed -> {
-                    state = UiState.Failed(s.message)
-                    CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
-                }
-                CompressionState.Idle -> if (state is UiState.Working) state = UiState.Idle
-            }
-        }
-    }
-
-    fun selectFile(uri: Uri) {
-        val mime = context.contentResolver.getType(uri) ?: ""
-        // A shared/picked Uri can be unreadable (permission revoked, provider gone): show an error, don't crash.
-        val size = try {
-            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
-        } catch (e: Exception) {
-            state = UiState.Failed("Couldn't open that file (${e.javaClass.simpleName}). Try picking it again.")
-            return
-        }
-        convertToGif = false
-        videoDurationMs = 0L
-        trimStartMs = 0L
-        trimEndMs = 0L
-        state = UiState.FileSelected(uri, mime, size, thumbnail = null)
-        scope.launch {
-            val thumb = withContext(Dispatchers.IO) { decodeThumbnail(context.contentResolver, uri, mime) }
-            val current = state
-            if (current is UiState.FileSelected && current.uri == uri) {
-                state = current.copy(thumbnail = thumb)
-            }
-        }
-        if (mime.startsWith("video")) {
-            scope.launch {
-                val duration = withContext(Dispatchers.IO) { queryVideoDurationMs(context, uri) }
-                videoDurationMs = duration
-                trimEndMs = duration.coerceAtMost(VideoToGifConverter.MAX_DURATION_MS)
-            }
-        }
-    }
-
-    LaunchedEffect(initialUri) {
-        if (initialUri != null) selectFile(initialUri)
-    }
-
-    // Downloading runs in DownloadService (a foreground service), same pattern as compression.
-    // On success, the downloaded file drops straight into the normal file-selected/compress flow.
-    LaunchedEffect(Unit) {
-        DownloadRepository.state.collect { s ->
-            when (s) {
-                is DownloadState.Working -> state = UiState.Downloading(s.message, s.progress)
-                is DownloadState.Done -> {
-                    selectFile(s.uri)
-                    DownloadRepository.state.compareAndSet(s, DownloadState.Idle)
-                }
-                is DownloadState.Failed -> {
-                    state = UiState.Failed(s.message)
-                    DownloadRepository.state.compareAndSet(s, DownloadState.Idle)
-                }
-                DownloadState.Idle -> if (state is UiState.Downloading) state = UiState.Idle
-            }
-        }
-    }
+    LaunchedEffect(initialUri) { vm.onInitialUri(initialUri) }
 
     val pickLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) selectFile(uri)
+        if (uri != null) vm.selectFile(uri)
     }
 
-    fun runCompression(
-        uri: Uri,
-        mime: String,
-        originalBytes: Long,
-        thumbnail: Bitmap?,
-        targetBytes: Long,
-        targetLabel: String,
-        toGif: Boolean,
-        trimStartMs: Long,
-        trimDurationMs: Long
-    ) {
-        if (CompressionRepository.state.value is CompressionState.Working) {
+    fun runCompression(file: UiState.FileSelected, targetBytes: Long, targetLabel: String) {
+        if (!vm.startCompression(file, targetBytes, targetLabel)) {
             toast("A compression is already running")
             return
         }
-        val isVideo = mime.startsWith("video")
-        val isGif = mime == "image/gif"
-        workingThumbnail = thumbnail
-        state = UiState.Working(
-            originalBytes,
-            "Starting compression...",
-            0f,
-            indeterminate = !isVideo && !isGif,
-            thumbnail = thumbnail,
-            uri = uri,
-            mime = mime
-        )
         if (Build.VERSION.SDK_INT >= 33) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
-        CompressionService.start(
-            context, uri, mime, originalBytes, targetBytes, targetLabel, toGif, trimStartMs, trimDurationMs
-        )
     }
 
     if (showHistory) {
@@ -231,9 +92,7 @@ fun CompressorScreen(initialUri: Uri? = null) {
     // (file selected, working, done, failed) since there's no navigation back stack here.
     // Compression itself keeps running in CompressionService regardless, so just returning
     // to the picker is safe even mid-compression.
-    BackHandler(enabled = state !is UiState.Idle) {
-        state = UiState.Idle
-    }
+    BackHandler(enabled = state !is UiState.Idle) { vm.reset() }
 
     Scaffold(
         topBar = {
@@ -290,18 +149,15 @@ fun CompressorScreen(initialUri: Uri? = null) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     OutlinedTextField(
-                        value = downloadUrl,
-                        onValueChange = { downloadUrl = it },
+                        value = vm.downloadUrl,
+                        onValueChange = { vm.downloadUrl = it },
                         label = { Text("Video URL") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedButton(
-                        onClick = {
-                            DownloadService.start(context, downloadUrl.trim())
-                            downloadUrl = ""
-                        },
-                        enabled = downloadUrl.isNotBlank(),
+                        onClick = { vm.startDownload() },
+                        enabled = vm.downloadUrl.isNotBlank(),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -321,12 +177,12 @@ fun CompressorScreen(initialUri: Uri? = null) {
                 }
 
                 is UiState.FileSelected -> {
-                    val needsTrim = convertToGif && videoDurationMs > VideoToGifConverter.MAX_DURATION_MS
+                    val needsTrim = vm.convertToGif && vm.videoDurationMs > VideoToGifConverter.MAX_DURATION_MS
                     if (s.mime.startsWith("video")) {
                         VideoPreviewPlayer(
                             uri = s.uri,
-                            trimStartMs = if (needsTrim) trimStartMs else 0L,
-                            trimEndMs = if (needsTrim) trimEndMs else videoDurationMs.coerceAtLeast(1L)
+                            trimStartMs = if (needsTrim) vm.trimStartMs else 0L,
+                            trimEndMs = if (needsTrim) vm.trimEndMs else vm.videoDurationMs.coerceAtLeast(1L)
                         )
                     } else {
                         ThumbnailPreview(s.thumbnail)
@@ -373,28 +229,28 @@ fun CompressorScreen(initialUri: Uri? = null) {
                     }
                     if (s.mime.startsWith("video")) {
                         VideoModeToggle(
-                            convertToGif = convertToGif,
-                            onChange = { convertToGif = it }
+                            convertToGif = vm.convertToGif,
+                            onChange = { vm.convertToGif = it }
                         )
                     }
                     if (needsTrim) {
                         VideoTrimFilmstrip(
                             uri = s.uri,
-                            durationMs = videoDurationMs,
-                            trimStartMs = trimStartMs,
-                            trimEndMs = trimEndMs,
-                            onTrimChange = { start, end -> trimStartMs = start; trimEndMs = end }
+                            durationMs = vm.videoDurationMs,
+                            trimStartMs = vm.trimStartMs,
+                            trimEndMs = vm.trimEndMs,
+                            onTrimChange = { start, end -> vm.trimStartMs = start; vm.trimEndMs = end }
                         )
                     }
                     PresetButtons(enabled = true) { preset ->
-                        runCompression(s.uri, s.mime, s.originalBytes, s.thumbnail, preset.bytes, "${preset.label} (${preset.short})", convertToGif, trimStartMs, trimEndMs - trimStartMs)
+                        runCompression(s, preset.bytes, "${preset.label} (${preset.short})")
                     }
                     CustomSizeSlider(
-                        fraction = customSliderFraction,
-                        onFractionChange = { customSliderFraction = it },
+                        fraction = vm.customSliderFraction,
+                        onFractionChange = { vm.customSliderFraction = it },
                         enabled = true,
                         onCompress = { bytes, label ->
-                            runCompression(s.uri, s.mime, s.originalBytes, s.thumbnail, bytes, label, convertToGif, trimStartMs, trimEndMs - trimStartMs)
+                            runCompression(s, bytes, label)
                         }
                     )
                 }
@@ -456,7 +312,7 @@ fun CompressorScreen(initialUri: Uri? = null) {
                         }
                     }
                     OutlinedButton(
-                        onClick = { state = UiState.Idle },
+                        onClick = { vm.reset() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Compress another file")
@@ -466,7 +322,7 @@ fun CompressorScreen(initialUri: Uri? = null) {
                 is UiState.Failed -> {
                     ErrorCard(message = s.message)
                     OutlinedButton(
-                        onClick = { state = UiState.Idle },
+                        onClick = { vm.reset() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Try again")
