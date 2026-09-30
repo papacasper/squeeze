@@ -50,4 +50,4 @@ This isn't published to the Play Store — it's built and sideloaded (`adb insta
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0-or-later — see [LICENSE](LICENSE). The bundled ffmpeg (used for URL downloads) is GPL-3.0, so the app as a whole is distributed under GPL-3.0.
