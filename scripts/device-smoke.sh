@@ -6,6 +6,7 @@
 #   scripts/device-smoke.sh <video display name> <preset label> [timeout_s]
 #   scripts/device-smoke.sh 20260818_180742.mp4 "Discord Free"
 #   SMOKE_SPLIT=1 scripts/device-smoke.sh 20260818_180742.mp4 "Discord Free"   # with parts enabled
+#   SMOKE_MIN_HEIGHT=1080 scripts/device-smoke.sh ...   # set the resolution floor first
 #   scripts/device-smoke.sh 20260818_180742.mp4 --hints   # print pre-encode warnings, start nothing
 set -u
 FILE="${1:?video display name, e.g. clip.mp4}"
@@ -60,6 +61,9 @@ if [ "$PRESET" = "--hints" ]; then # print feasibility hints shown after selecti
   for _ in 1 2 3 4; do adb shell input swipe 720 2400 720 1200 300; sleep 1; done
   dump | python3 -c 'import re,sys; [print(t) for t in re.findall(r"text=\"([^\"]*(?:Can.t reach|look rough)[^\"]*)\"", sys.stdin.read())]'
   exit 0
+fi
+if [ -n "${SMOKE_MIN_HEIGHT:-}" ]; then # pick the "Never go below" resolution chip, e.g. SMOKE_MIN_HEIGHT=1080
+  step "resolution floor chip" "${SMOKE_MIN_HEIGHT}p" 6; sleep 1
 fi
 if [ "${SMOKE_SPLIT:-0}" = 1 ]; then # turn on "Split long videos into parts" (Compose Switch: the NAF checkable node) before starting
   for i in 0 1 2 3 4 5 6; do
