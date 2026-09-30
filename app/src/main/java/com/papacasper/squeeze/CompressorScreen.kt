@@ -128,7 +128,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                 .padding(horizontal = 20.dp, vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            val isWorking = state is UiState.Working || state is UiState.Downloading
+            val isWorking = state is UiState.Working || state is UiState.Downloading || state is UiState.Importing
 
             OutlinedButton(
                 onClick = { pickLauncher.launch("*/*") },
@@ -174,6 +174,14 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                         message = s.message,
                         progress = s.progress,
                         onCancel = { DownloadService.cancel(context) }
+                    )
+                }
+
+                is UiState.Importing -> {
+                    DownloadingCard(
+                        message = s.message,
+                        progress = s.progress.coerceAtLeast(0f),
+                        onCancel = { vm.cancelImport() }
                     )
                 }
 
@@ -244,7 +252,13 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                             onTrimChange = { start, end -> vm.setTrim(start, end) }
                         )
                     }
-                    PresetButtons(enabled = true) { preset ->
+                    if (s.mime.startsWith("video") && !vm.convertToGif) {
+                        FloorsCard(vm.floors) { vm.updateFloors(it) }
+                        SplitToggle(vm.splitLongVideos) { vm.splitLongVideos = it }
+                    }
+                    PresetButtons(enabled = true, hint = { preset ->
+                        feasibilityHint(vm, s, preset.bytes)
+                    }) { preset ->
                         runCompression(s, preset.bytes, "${preset.label} (${preset.short})")
                     }
                     CustomSizeSlider(
@@ -275,10 +289,25 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                 }
 
                 is UiState.Done -> {
+                    val allFiles = listOf(s.resultFile) + s.extraFiles
+                    val names = allFiles.indices.map {
+                        if (allFiles.size == 1) s.suggestedName else BitrateMath.partName(s.suggestedName, it, allFiles.size)
+                    }
+                    if (s.mime.startsWith("video")) {
+                        allFiles.forEach { f ->
+                            VideoPreviewPlayer(uri = android.net.Uri.fromFile(f), trimStartMs = 0L, trimEndMs = Long.MAX_VALUE)
+                        }
+                    }
                     InfoCard(label = "Original file", size = s.originalBytes)
+                    if (s.settings.isNotEmpty()) {
+                        Text("Made with: ${s.settings}", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (allFiles.size > 1) {
+                        Text("Split into ${allFiles.size} parts, each under ${s.targetLabel}", style = MaterialTheme.typography.bodyMedium)
+                    }
                     ResultCard(
                         originalBytes = s.originalBytes,
-                        resultBytes = s.resultFile.length(),
+                        resultBytes = allFiles.sumOf { it.length() },
                         fitsTarget = s.fitsTarget,
                         targetLabel = s.targetLabel
                     )
@@ -286,8 +315,8 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                         Button(
                             onClick = {
                                 saveOrToast {
-                                    SaveUtils.saveToDownloads(context, s.resultFile, s.suggestedName, s.mime)
-                                    toast("Saved to Downloads/Squeeze")
+                                    allFiles.forEachIndexed { i, f -> SaveUtils.saveToDownloads(context, f, names[i], s.mime) }
+                                    toast(if (allFiles.size > 1) "Saved ${allFiles.size} parts to Downloads/Squeeze" else "Saved to Downloads/Squeeze")
                                 }
                             },
                             modifier = Modifier.weight(1f)
@@ -298,10 +327,10 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                         Button(
                             onClick = {
                                 saveOrToast {
-                                    val uri = SaveUtils.saveToDownloads(context, s.resultFile, s.suggestedName, s.mime)
+                                    val uris = allFiles.mapIndexed { i, f -> SaveUtils.saveToDownloads(context, f, names[i], s.mime) }
                                     context.startActivity(
                                         android.content.Intent.createChooser(
-                                            SaveUtils.shareIntent(uri, s.mime),
+                                            if (uris.size > 1) SaveUtils.shareMultipleIntent(uris, s.mime) else SaveUtils.shareIntent(uris[0], s.mime),
                                             "Share compressed file"
                                         )
                                     )
@@ -335,3 +364,21 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
     }
 }
 
+
+/** One-line warning for a target the floors (720p, 24 fps, audio steps, 100 kbps) can't meet or can only meet roughly. */
+private fun feasibilityHint(vm: CompressorViewModel, file: UiState.FileSelected, targetBytes: Long): String? {
+    val probe = vm.sourceProbe ?: return null
+    if (vm.convertToGif || !file.mime.startsWith("video")) return null
+    val durationMs = (vm.trimEndMs - vm.trimStartMs).takeIf { it > 0 } ?: vm.videoDurationMs
+    if (durationMs <= 0) return null
+    val parts = vm.partsFor(targetBytes, file.originalBytes)
+    if (parts > 1) return "Will be split into $parts parts, each under this size"
+    val a = BitrateMath.assess(
+        targetBytes, durationMs / 1000.0, probe.audioBitrate, probe.pixels, probe.height, file.originalBytes, vm.floors
+    )
+    return when (a.level) {
+        BitrateMath.Feasibility.UNREACHABLE -> "Can't reach this size — the smallest possible at ${vm.floors.minHeight}p is about ${formatSize(a.minBytes)}"
+        BitrateMath.Feasibility.ROUGH -> "Will fit, but the video will look rough (about ${a.videoBitrate / 1000} kbps)"
+        BitrateMath.Feasibility.OK -> null
+    }
+}

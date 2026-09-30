@@ -39,7 +39,11 @@ sealed class CompressionState {
         val mime: String,
         val fitsTarget: Boolean,
         val targetLabel: String,
-        val suggestedName: String
+        val suggestedName: String,
+        /** Parts 2..n when the video was split; [resultFile] is part 1. */
+        val extraFiles: List<File> = emptyList(),
+        /** Resolution / frame rate / audio the winning pass used; empty for images and GIFs. */
+        val settings: String = ""
     ) : CompressionState()
     data class Failed(val message: String) : CompressionState()
 }
@@ -78,8 +82,14 @@ class CompressionService : Service() {
         val trimStartMs = intent.getLongExtra(EXTRA_TRIM_START, 0L)
         val trimDurationMs = intent.getLongExtra(EXTRA_TRIM_DURATION, 0L)
         val trimmed = intent.getBooleanExtra(EXTRA_TRIMMED, false)
+        val floors = BitrateMath.Floors(
+            minHeight = intent.getIntExtra(EXTRA_MIN_HEIGHT, 720),
+            minFps = intent.getFloatExtra(EXTRA_MIN_FPS, BitrateMath.MIN_FPS),
+            minAudioBitrate = intent.getLongExtra(EXTRA_MIN_AUDIO, BitrateMath.AUDIO_STEPS.last())
+        )
+        val parts = intent.getIntExtra(EXTRA_PARTS, 1).coerceIn(1, BitrateMath.MAX_PARTS)
 
-        start(uri, mime, originalBytes, targetBytes, targetLabel, toGif, trimStartMs, trimDurationMs, trimmed)
+        start(uri, mime, originalBytes, targetBytes, targetLabel, toGif, trimStartMs, trimDurationMs, trimmed, floors, parts)
         return START_NOT_STICKY
     }
 
@@ -92,7 +102,9 @@ class CompressionService : Service() {
         toGif: Boolean,
         trimStartMs: Long,
         trimDurationMs: Long,
-        trimmed: Boolean
+        trimmed: Boolean,
+        floors: BitrateMath.Floors,
+        parts: Int
     ) {
         createChannel()
         val isVideo = mime.startsWith("video")
@@ -131,6 +143,11 @@ class CompressionService : Service() {
                         else -> "compressed.jpg"
                     }
                 )
+                // With parts, part 1 doubles as the primary result file.
+                val partFiles = if (isVideo && parts > 1 && !videoToGif) {
+                    List(parts) { File(outDir, "compressed-part${it + 1}.mp4") }
+                } else listOf(outFile)
+                val resultFile = partFiles.first()
                 val resultMime = when {
                     videoToGif -> "image/gif"
                     isVideo -> "video/mp4"
@@ -138,6 +155,7 @@ class CompressionService : Service() {
                     else -> "image/jpeg"
                 }
 
+                var settings = ""
                 fun onProgress(msg: String, fraction: Float) {
                     publishState(CompressionState.Working(
                         originalBytes, msg, fraction, indeterminate = false, uri = uri, mime = mime
@@ -153,10 +171,28 @@ class CompressionService : Service() {
                         videoToGif -> VideoToGifConverter.convert(applicationContext, uri, targetBytes, outFile, trimStartMs, trimDurationMs) { msg, fraction ->
                             onProgress(msg, fraction)
                         }
+                        isVideo && parts > 1 -> {
+                            val windowStart = if (trimmed) trimStartMs else 0L
+                            val windowLen = if (trimmed) trimDurationMs else queryVideoDurationMs(applicationContext, uri)
+                            for (i in 0 until parts) {
+                                val partFile = partFiles[i]
+                                VideoCompressor.compress(
+                                    applicationContext, uri, targetBytes, partFile,
+                                    trimStartMs = windowStart + windowLen * i / parts,
+                                    trimDurationMs = windowLen * (i + 1) / parts - windowLen * i / parts,
+                                    floors = floors,
+                                    onSettings = { if (i == 0) settings = it }
+                                ) { msg, fraction ->
+                                    onProgress("Part ${i + 1} of $parts: $msg", (i + fraction) / parts)
+                                }
+                            }
+                        }
                         isVideo -> VideoCompressor.compress(
                             applicationContext, uri, targetBytes, outFile,
                             trimStartMs = if (trimmed) trimStartMs else 0L,
-                            trimDurationMs = if (trimmed) trimDurationMs else 0L
+                            trimDurationMs = if (trimmed) trimDurationMs else 0L,
+                            floors = floors,
+                            onSettings = { settings = it }
                         ) { msg, fraction ->
                             onProgress(msg, fraction)
                         }
@@ -170,17 +206,19 @@ class CompressionService : Service() {
                     }
                 }
 
-                val fits = outFile.length() <= targetBytes
+                val fits = partFiles.all { it.length() <= targetBytes }
                 val sourceName = queryDisplayName(contentResolver, uri) ?: outFile.name
                 CompressionBridge.publish(
                     applicationContext,
                     CompressionState.Done(
                         originalBytes = originalBytes,
-                        resultFile = outFile,
+                        resultFile = resultFile,
                         mime = resultMime,
                         fitsTarget = fits,
                         targetLabel = targetLabel,
-                        suggestedName = squeezedName(queryDisplayName(contentResolver, uri), outFile)
+                        suggestedName = squeezedName(queryDisplayName(contentResolver, uri), outFile),
+                        extraFiles = partFiles.drop(1),
+                        settings = settings
                     ),
                     sourceName
                 )
@@ -257,6 +295,10 @@ class CompressionService : Service() {
         private const val EXTRA_TRIM_START = "trim_start"
         private const val EXTRA_TRIM_DURATION = "trim_duration"
         private const val EXTRA_TRIMMED = "trimmed"
+        private const val EXTRA_MIN_HEIGHT = "min_height"
+        private const val EXTRA_MIN_FPS = "min_fps"
+        private const val EXTRA_MIN_AUDIO = "min_audio"
+        private const val EXTRA_PARTS = "parts"
 
         fun start(
             context: Context,
@@ -268,7 +310,9 @@ class CompressionService : Service() {
             toGif: Boolean,
             trimStartMs: Long,
             trimDurationMs: Long,
-            trimmed: Boolean = false
+            trimmed: Boolean = false,
+            floors: BitrateMath.Floors = BitrateMath.Floors(),
+            parts: Int = 1
         ) {
             val intent = Intent(context, CompressionService::class.java)
                 .putExtra(EXTRA_URI, uri)
@@ -280,6 +324,10 @@ class CompressionService : Service() {
                 .putExtra(EXTRA_TRIM_START, trimStartMs)
                 .putExtra(EXTRA_TRIM_DURATION, trimDurationMs)
                 .putExtra(EXTRA_TRIMMED, trimmed)
+                .putExtra(EXTRA_MIN_HEIGHT, floors.minHeight)
+                .putExtra(EXTRA_MIN_FPS, floors.minFps)
+                .putExtra(EXTRA_MIN_AUDIO, floors.minAudioBitrate)
+                .putExtra(EXTRA_PARTS, parts)
             context.startForegroundService(intent)
         }
 

@@ -38,6 +38,8 @@ object CompressionBridge {
     private const val EXTRA_LABEL = "label"
     private const val EXTRA_NAME = "name"
     private const val EXTRA_SOURCE_NAME = "source_name"
+    private const val EXTRA_SETTINGS = "settings"
+    private const val EXTRA_EXTRA_PATHS = "extra_paths"  // newline-joined paths of parts 2..n
 
     // ---- service side ----
 
@@ -54,6 +56,8 @@ object CompressionBridge {
                 .putExtra(EXTRA_MIME, state.mime).putExtra(EXTRA_FITS, state.fitsTarget)
                 .putExtra(EXTRA_LABEL, state.targetLabel).putExtra(EXTRA_NAME, state.suggestedName)
                 .putExtra(EXTRA_SOURCE_NAME, sourceName)
+                .putExtra(EXTRA_SETTINGS, state.settings)
+                .putExtra(EXTRA_EXTRA_PATHS, state.extraFiles.joinToString("\n") { it.absolutePath })
             is CompressionState.Failed -> intent.putExtra(EXTRA_KIND, "failed").putExtra(EXTRA_MESSAGE, state.message)
         }
         // Terminal results are also written to disk: if the UI process was swiped away mid-job there is
@@ -66,7 +70,7 @@ object CompressionBridge {
 
     private fun savePending(context: Context, intent: Intent) {
         val json = JSONObject()
-        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME)) {
+        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME, EXTRA_EXTRA_PATHS, EXTRA_SETTINGS)) {
             intent.getStringExtra(key)?.let { json.put(key, it) }
         }
         json.put(EXTRA_ORIGINAL_BYTES, intent.getLongExtra(EXTRA_ORIGINAL_BYTES, 0L))
@@ -81,7 +85,7 @@ object CompressionBridge {
         file.delete()
         json ?: return
         val intent = Intent(ACTION_STATE)
-        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME)) {
+        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME, EXTRA_EXTRA_PATHS, EXTRA_SETTINGS)) {
             if (json.has(key)) intent.putExtra(key, json.getString(key))
         }
         intent.putExtra(EXTRA_ORIGINAL_BYTES, json.optLong(EXTRA_ORIGINAL_BYTES)).putExtra(EXTRA_FITS, json.optBoolean(EXTRA_FITS))
@@ -143,12 +147,14 @@ object CompressionBridge {
                 val original = intent.getLongExtra(EXTRA_ORIGINAL_BYTES, 0L)
                 val fits = intent.getBooleanExtra(EXTRA_FITS, false)
                 val label = intent.getStringExtra(EXTRA_LABEL).orEmpty()
+                val extras = intent.getStringExtra(EXTRA_EXTRA_PATHS).orEmpty().lines().filter { it.isNotBlank() }.map(::File)
                 HistoryStore.addEntry(
                     app,
-                    HistoryEntry(System.currentTimeMillis(), intent.getStringExtra(EXTRA_SOURCE_NAME) ?: file.name, original, file.length(), label, fits)
+                    HistoryEntry(System.currentTimeMillis(), intent.getStringExtra(EXTRA_SOURCE_NAME) ?: file.name, original, file.length() + extras.sumOf { it.length() }, label, fits)
                 )
                 CompressionRepository.state.value = CompressionState.Done(
-                    original, file, intent.getStringExtra(EXTRA_MIME).orEmpty(), fits, label, intent.getStringExtra(EXTRA_NAME).orEmpty()
+                    original, file, intent.getStringExtra(EXTRA_MIME).orEmpty(), fits, label, intent.getStringExtra(EXTRA_NAME).orEmpty(), extras,
+                    intent.getStringExtra(EXTRA_SETTINGS).orEmpty()
                 )
             }
             "failed" -> {

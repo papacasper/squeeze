@@ -31,10 +31,14 @@ internal sealed class UiState {
         val mime: String,
         val fitsTarget: Boolean,
         val targetLabel: String,
-        val suggestedName: String
+        val suggestedName: String,
+        val extraFiles: List<File> = emptyList(),
+        val settings: String = ""
     ) : UiState()
     data class Failed(val message: String) : UiState()
     data class Downloading(val message: String, val progress: Float) : UiState()
+    /** Copying a cloud-backed file (e.g. from Google Photos) to local storage; progress < 0 means unknown. */
+    data class Importing(val message: String, val progress: Float) : UiState()
 }
 
 /**
@@ -55,6 +59,29 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
     var trimEndMs by mutableStateOf(0L)
         private set
     var downloadUrl by mutableStateOf("")
+    /** Lowest quality the user accepts; persisted so it survives restarts. */
+    var floors by mutableStateOf(FloorsStore.load(application))
+        private set
+
+    /** Off by default: splitting changes what the user gets (several files), so it is opt-in. */
+    var splitLongVideos by mutableStateOf(false)
+
+    /** Parts the current selection would be cut into for [targetBytes] (1 = no split). */
+    fun partsFor(targetBytes: Long, originalBytes: Long): Int {
+        val probe = sourceProbe ?: return 1
+        if (!splitLongVideos || convertToGif) return 1
+        val ms = (trimEndMs - trimStartMs).takeIf { it > 0 } ?: videoDurationMs
+        if (ms <= 0) return 1
+        return BitrateMath.partsNeeded(targetBytes, ms / 1000.0, probe.audioBitrate, probe.pixels, probe.height, originalBytes, floors)
+    }
+
+    fun updateFloors(new: BitrateMath.Floors) {
+        floors = new
+        FloorsStore.save(getApplication(), new)
+    }
+    /** Audio/resolution facts for the feasibility hints; null for images or unreadable sources. */
+    var sourceProbe by mutableStateOf<SourceProbe?>(null)
+        private set
 
     private var workingThumbnail: Bitmap? = null
     private var handledInitialUri: Uri? = null
@@ -72,7 +99,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
                     is CompressionState.Done -> {
                         if (s.resultFile.exists()) {
                             state = UiState.Done(
-                                s.originalBytes, s.resultFile, s.mime, s.fitsTarget, s.targetLabel, s.suggestedName
+                                s.originalBytes, s.resultFile, s.mime, s.fitsTarget, s.targetLabel, s.suggestedName, s.extraFiles, s.settings
                             )
                         }
                         CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
@@ -118,18 +145,57 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         selectFile(uri)
     }
 
+    private var importJob: kotlinx.coroutines.Job? = null
+
+    fun cancelImport() {
+        importJob?.cancel()
+        importJob = null
+        if (state is UiState.Importing) state = UiState.Idle
+    }
+
     fun selectFile(uri: Uri) {
         val context = getApplication<Application>()
-        val mime = context.contentResolver.getType(uri) ?: ""
-        // A shared/picked Uri can be unreadable (permission revoked, provider gone): show an error, don't crash.
-        val size = try {
-            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
-        } catch (e: Exception) {
-            state = UiState.Failed("Couldn't open that file (${e.javaClass.simpleName}). Try picking it again.")
-            return
+        importJob?.cancel()
+        // Provider calls can block for a long time (cloud-backed files), so nothing here runs on the main thread.
+        importJob = viewModelScope.launch {
+            val mime: String
+            var local = uri
+            var size: Long
+            try {
+                mime = withContext(Dispatchers.IO) { context.contentResolver.getType(uri) } ?: ""
+                if (withContext(Dispatchers.IO) { FileImport.needsImport(context, uri) }) {
+                    state = UiState.Importing("Copying from the source app...", -1f)
+                    local = withContext(Dispatchers.IO) {
+                        FileImport.importToCache(context, uri) { fraction ->
+                            state = UiState.Importing(
+                                if (fraction >= 0f) "Copying from the source app... ${(fraction * 100).toInt()}%" else "Copying from the source app...",
+                                fraction
+                            )
+                        }
+                    }
+                }
+                // A shared/picked Uri can be unreadable (permission revoked, provider gone): show an error, don't crash.
+                size = withContext(Dispatchers.IO) {
+                    context.contentResolver.openAssetFileDescriptor(local, "r")?.use { it.length } ?: 0L
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                state = UiState.Failed(
+                    if (e is java.io.IOException && e.message != null) e.message!!
+                    else "Couldn't open that file (${e.javaClass.simpleName}). Try picking it again."
+                )
+                return@launch
+            }
+            finishSelect(local, mime, size)
         }
+    }
+
+    private fun finishSelect(uri: Uri, mime: String, size: Long) {
+        val context = getApplication<Application>()
         convertToGif = false
         videoDurationMs = 0L
+        sourceProbe = null
         trimStartMs = 0L
         trimEndMs = 0L
         state = UiState.FileSelected(uri, mime, size, thumbnail = null)
@@ -145,6 +211,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
                 val duration = withContext(Dispatchers.IO) { queryVideoDurationMs(context, uri) }
                 videoDurationMs = duration
                 trimEndMs = duration
+                sourceProbe = withContext(Dispatchers.IO) { VideoCompressor.probe(context, uri) }
             }
         }
     }
@@ -167,6 +234,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
 
     /** Starts the compression service for [file]; false if one is already running. */
     fun startCompression(file: UiState.FileSelected, targetBytes: Long, targetLabel: String): Boolean {
+        val parts = if (file.mime.startsWith("video")) partsFor(targetBytes, file.originalBytes) else 1
         if (CompressionRepository.state.value is CompressionState.Working) return false
         val isVideo = file.mime.startsWith("video")
         val isGif = file.mime == "image/gif"
@@ -183,7 +251,9 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         CompressionService.start(
             getApplication(), file.uri, file.mime, file.originalBytes, targetBytes, targetLabel,
             convertToGif, trimStartMs, trimEndMs - trimStartMs,
-            trimmed = TrimMath.isTrimmed(trimStartMs, trimEndMs, videoDurationMs)
+            trimmed = TrimMath.isTrimmed(trimStartMs, trimEndMs, videoDurationMs),
+            floors = floors,
+            parts = parts
         )
         return true
     }

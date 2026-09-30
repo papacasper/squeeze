@@ -58,6 +58,13 @@ object SaveUtils {
         return uri
     }
 
+    fun shareMultipleIntent(uris: List<Uri>, mimeType: String): Intent =
+        Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = mimeType
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
     fun shareIntent(uri: Uri, mimeType: String): Intent {
         return Intent(Intent.ACTION_SEND).apply {
             type = mimeType

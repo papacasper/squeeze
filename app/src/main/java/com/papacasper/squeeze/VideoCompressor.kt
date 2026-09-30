@@ -42,7 +42,6 @@ object VideoCompressor {
 
     // Many hardware encoders clamp bitrate to a device/resolution-specific floor and silently
     // ignore a lower request, so a starved budget also steps resolution down (never below 720p).
-    private val HEIGHT_LADDER = BitrateMath.HEIGHT_LADDER
 
     /**
      * Re-encodes the video, retrying at progressively lower bitrates (and, once that stops
@@ -56,8 +55,11 @@ object VideoCompressor {
         outputFile: File,
         trimStartMs: Long = 0L,
         trimDurationMs: Long = 0L,
+        floors: BitrateMath.Floors = BitrateMath.Floors(),
+        onSettings: (String) -> Unit = {},
         onProgress: (String, Float) -> Unit
     ): File {
+        val HEIGHT_LADDER = floors.ladder()
         DecodeCheck.problem(context, sourceUri)?.let { throw IllegalStateException(it) }
         val fullDurationMs = getDurationMs(context, sourceUri)
         val trimmed = trimDurationMs > 0L
@@ -92,6 +94,38 @@ object VideoCompressor {
         // Still starved at the chosen rung: cap to MIN_FPS (a no-op for sources already at or below it).
         var capFps = BitrateMath.starvedAt(bitrate, sourcePixels, originalHeight, HEIGHT_LADDER[ladderIndex])
 
+        // A pass over a long clip costs minutes: encode a few seconds first and start from the
+        // bitrate that sample says will land on the target.
+        if (durationSec >= BitrateMath.CALIBRATE_MIN_SEC) {
+            val sampleSec = BitrateMath.CALIBRATE_SAMPLE_SEC
+            val sampleFile = File(outputFile.parentFile, "sample_${outputFile.name}")
+            try {
+                onProgress("Testing a short sample to size the encode...", 0f)
+                val sampleStart = trimStartMs + ((durationSec - sampleSec) / 2 * 1000).toLong()
+                transcode(
+                    context, sourceUri, sampleFile, bitrate,
+                    HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }.coerceAtMost(originalHeight),
+                    originalHeight, if (capFps) floors.minFps else null, audioBitrate, "video/hevc",
+                    sampleStart, (sampleSec * 1000).toLong()
+                ) { }
+                val sampleBytes = sampleFile.length()
+                if (sampleBytes > 0) {
+                    val audioBps = audioBitrate ?: sourceAudioBitrate
+                    val predicted = BitrateMath.predictedBytes(sampleBytes, sampleSec, audioBps, durationSec)
+                    bitrate = BitrateMath.calibratedBitrate(bitrate, sampleBytes, sampleSec, audioBps, durationSec, targetBytes)
+                    onProgress("Sample predicts about ${predicted / 1_000_000} MB; starting at ${bitrate / 1000} kbps.", 0f)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                sampleFile.delete()
+                throw e
+            } catch (e: Exception) {
+                // Calibration is only an optimisation; the passes below still verify the size.
+            } finally {
+                sampleFile.delete()
+            }
+        }
+        var bestSettings = ""
+
         for (attempt in 1..maxAttempts) {
             val targetHeight = HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }
                 .coerceAtMost(originalHeight)
@@ -99,15 +133,15 @@ object VideoCompressor {
             val audioLabel = audioBitrate?.let { ", audio ${it / 1000} kbps" } ?: ""
             val passBase = (attempt - 1).toFloat() / maxAttempts
             onProgress(
-                "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${BitrateMath.MIN_FPS.toInt()} fps" else ""}$audioLabel)...",
+                "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${floors.minFps.toInt()} fps" else ""}$audioLabel)...",
                 passBase
             )
             val passFile = File(outputFile.parentFile, "pass${attempt}_${outputFile.name}")
             try {
                 try {
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, capFps, audioBitrate, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
-                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${BitrateMath.MIN_FPS.toInt()} fps" else ""}$audioLabel)...",
+                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${floors.minFps.toInt()} fps" else ""}$audioLabel)...",
                             passBase + intraFraction / maxAttempts
                         )
                     }
@@ -117,7 +151,7 @@ object VideoCompressor {
                         "Encoder stalled, retrying pass $attempt with H.264...",
                         passBase
                     )
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, capFps, audioBitrate, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
                             "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p, H.264)...",
                             passBase + intraFraction / maxAttempts
@@ -139,6 +173,9 @@ object VideoCompressor {
                 bestFile?.delete()
                 bestFile = passFile
                 bestBytes = passBytes
+                bestSettings = "${targetHeight}p · " +
+                    (if (cappedThisPass) "${floors.minFps.toInt()} fps" else "original frame rate") +
+                    " · audio " + (audioBitrate?.let { "${it / 1000} kbps" } ?: "original")
             } else {
                 passFile.delete()
             }
@@ -157,7 +194,7 @@ object VideoCompressor {
 
             if (bitrate <= BitrateMath.MIN_BITRATE && ladderIndex == HEIGHT_LADDER.lastIndex && cappedThisPass) {
                 // Video has nothing left to give; try squeezing the audio harder before giving up.
-                val lowerAudio = BitrateMath.nextLowerAudioBitrate(audioBitrate, sourceAudioBitrate)
+                val lowerAudio = BitrateMath.nextLowerAudioBitrate(audioBitrate, sourceAudioBitrate, floors)
                 if (lowerAudio != null) {
                     audioBitrate = lowerAudio
                     audioBytes = lowerAudio * durationSec / 8.0
@@ -172,6 +209,7 @@ object VideoCompressor {
             bitrate = BitrateMath.nextVideoBitrate(bitrate, passBytes, goalBytes, audioBytes)
         }
 
+        onSettings(bestSettings)
         val result = bestFile ?: throw IllegalStateException("Video compression failed to produce output")
         if (result != outputFile) {
             result.copyTo(outputFile, overwrite = true)
@@ -188,7 +226,7 @@ object VideoCompressor {
         bitrate: Long,
         targetHeight: Int,
         originalHeight: Int,
-        capFps: Boolean,
+        capFpsTo: Float?,
         audioBitrate: Long?,
         videoMimeType: String,
         trimStartMs: Long,
@@ -253,7 +291,7 @@ object VideoCompressor {
             val itemBuilder = EditedMediaItem.Builder(mediaItem)
             val videoEffects = buildList<androidx.media3.common.Effect> {
                 if (targetHeight < originalHeight) add(Presentation.createForHeight(targetHeight))
-                if (capFps) add(androidx.media3.effect.FrameDropEffect.createDefaultFrameDropEffect(BitrateMath.MIN_FPS))
+                if (capFpsTo != null) add(androidx.media3.effect.FrameDropEffect.createDefaultFrameDropEffect(capFpsTo))
             }
             if (videoEffects.isNotEmpty()) itemBuilder.setEffects(Effects(emptyList(), videoEffects))
             transformer.start(itemBuilder.build(), outFile.absolutePath)
@@ -329,6 +367,17 @@ object VideoCompressor {
         }
     }
 
+    /** What the pre-encode feasibility check needs from [uri]; null if it can't be read. */
+    internal fun probe(context: Context, uri: Uri): SourceProbe? = try {
+        SourceProbe(
+            audioBitrate = estimateAudioBitrate(context, uri),
+            pixels = getVideoWidth(context, uri).toLong() * getVideoHeightRaw(context, uri),
+            height = getVideoHeight(context, uri)
+        )
+    } catch (e: Exception) {
+        null
+    }
+
     private fun estimateAudioBitrate(context: Context, uri: Uri): Long {
         val extractor = MediaExtractor()
         try {
@@ -351,3 +400,5 @@ object VideoCompressor {
         }
     }
 }
+
+internal class SourceProbe(val audioBitrate: Long, val pixels: Long, val height: Int)

@@ -1,0 +1,6 @@
+Warns before you start when a target can't be reached or will look rough.
+Choose the lowest resolution, frame rate and audio bitrate you'll accept.
+Optionally split long videos into parts that each fit the target, instead of degrading quality.
+Long videos are sized from a short test sample first, often saving a full encoding pass.
+Preview the result and see the settings used before saving.
+Files from cloud providers are copied locally before compressing.

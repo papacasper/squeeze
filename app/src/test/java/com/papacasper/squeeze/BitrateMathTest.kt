@@ -166,4 +166,115 @@ class BitrateMathTest {
     fun nextLowerAudio_noAudio() {
         assertNull(BitrateMath.nextLowerAudioBitrate(null, 0))
     }
+
+    private val px8k = 7680L * 4320
+
+    @Test
+    fun assess_8kLongClipTo20MB_isRoughButReachable() {
+        val a = BitrateMath.assess(20_000_000L, 776.0, 256_000, px8k, 4320)
+        assertEquals(BitrateMath.Feasibility.ROUGH, a.level)
+    }
+
+    @Test
+    fun assess_targetBelowFloors_isUnreachable() {
+        // 3 h at 100 kbps video alone is ~135 MB
+        val a = BitrateMath.assess(20_000_000L, 10_800.0, 128_000, 1920L * 1080, 1080)
+        assertEquals(BitrateMath.Feasibility.UNREACHABLE, a.level)
+        assertTrue(a.minBytes > 20_000_000L)
+    }
+
+    @Test
+    fun assess_generousTarget_isOk() {
+        val a = BitrateMath.assess(100_000_000L, 60.0, 128_000, 1920L * 1080, 1080)
+        assertEquals(BitrateMath.Feasibility.OK, a.level)
+    }
+
+    @Test
+    fun assess_smallSourceNeverRough() {
+        // 5 MB 1080p source to a 20 MB target is bounded by the source, not starved
+        val a = BitrateMath.assess(20_000_000L, 60.0, 128_000, 1920L * 1080, 1080, sourceBytes = 5_000_000L)
+        assertEquals(BitrateMath.Feasibility.OK, a.level)
+    }
+
+    @Test
+    fun assess_noAudioFloorIsVideoOnly() {
+        val a = BitrateMath.assess(1_000_000L, 60.0, 0, 1280L * 720, 720)
+        assertEquals(750_000L, a.minBytes)
+    }
+
+    @Test
+    fun floors_ladderEndsAtMinHeight() {
+        assertEquals(listOf(1080, 720), BitrateMath.Floors().ladder().toList())
+        assertEquals(listOf(1080, 720, 540, 480), BitrateMath.Floors(minHeight = 480).ladder().toList())
+        assertEquals(listOf(1080), BitrateMath.Floors(minHeight = 1080).ladder().toList())
+    }
+
+    @Test
+    fun floors_audioStepsRespectMinimum() {
+        val f = BitrateMath.Floors(minAudioBitrate = 48_000L)
+        assertEquals(listOf(64_000L, 48_000L), f.audioSteps().toList())
+        assertNull(BitrateMath.nextLowerAudioBitrate(48_000L, 256_000L, f))
+        assertEquals(48_000L, BitrateMath.nextLowerAudioBitrate(64_000L, 256_000L, f))
+    }
+
+    @Test
+    fun assess_higherHeightFloorNeedsMoreBitrate() {
+        // 1080 floor is starved where the 720 floor is not
+        val loose = BitrateMath.assess(60_000_000L, 300.0, 128_000, 1920L * 1080, 1080)
+        val strict = BitrateMath.assess(20_000_000L, 300.0, 128_000, 1920L * 1080, 1080, floors = BitrateMath.Floors(minHeight = 1080))
+        assertEquals(BitrateMath.Feasibility.OK, loose.level)
+        assertEquals(BitrateMath.Feasibility.ROUGH, strict.level)
+    }
+
+    @Test
+    fun partsNeeded_oneWhenAlreadyFine() {
+        assertEquals(1, BitrateMath.partsNeeded(100_000_000L, 60.0, 128_000, 1920L * 1080, 1080))
+    }
+
+    @Test
+    fun partsNeeded_splitsLongClipUntilNotRough() {
+        // 8K 776 s to 20 MB is rough; a few parts each get enough bitrate
+        val n = BitrateMath.partsNeeded(20_000_000L, 776.0, 256_000, 7680L * 4320, 4320, 8_700_000_000L)
+        assertTrue("got $n", n in 2..BitrateMath.MAX_PARTS)
+        val each = BitrateMath.assess(20_000_000L, 776.0 / n, 256_000, 7680L * 4320, 4320, 8_700_000_000L / n)
+        assertEquals(BitrateMath.Feasibility.OK, each.level)
+    }
+
+    @Test
+    fun partsNeeded_oneWhenSplittingCannotHelp() {
+        // 8 parts of a 3 h clip are still far over 20 MB
+        assertEquals(1, BitrateMath.partsNeeded(20_000_000L, 10_800.0, 128_000, 1920L * 1080, 1080))
+    }
+
+    @Test
+    fun partName_insertsBeforeExtension() {
+        assertEquals("clip-squeezed-part2of3.mp4", BitrateMath.partName("clip-squeezed.mp4", 1, 3))
+        assertEquals("noext-part1of2", BitrateMath.partName("noext", 0, 2))
+    }
+
+    @Test
+    fun calibrated_lowersBitrateWhenSampleRunsOver() {
+        // 8 s sample of 1 MB at 1 Mbps over a 800 s clip predicts ~100 MB video vs a 20 MB target
+        val b = BitrateMath.calibratedBitrate(1_000_000, 1_000_000, 8.0, 0, 800.0, 20_000_000)
+        assertTrue("got $b", b < 400_000 && b >= BitrateMath.MIN_BITRATE)
+    }
+
+    @Test
+    fun calibrated_raisesButCapsWhenSampleUndershoots() {
+        val b = BitrateMath.calibratedBitrate(200_000, 10_000, 8.0, 0, 800.0, 20_000_000)
+        assertEquals(300_000L, b)
+    }
+
+    @Test
+    fun calibrated_subtractsAudioFromSample() {
+        val withAudio = BitrateMath.calibratedBitrate(1_000_000, 200_000, 8.0, 128_000, 200.0, 6_000_000)
+        val without = BitrateMath.calibratedBitrate(1_000_000, 200_000, 8.0, 0, 200.0, 6_000_000)
+        assertTrue(withAudio != without)
+    }
+
+    @Test
+    fun predictedBytes_scalesSampleToClip() {
+        // 125 kB of video in 1 s, 100 s clip, no audio
+        assertEquals(12_500_000L, BitrateMath.predictedBytes(125_000, 1.0, 0, 100.0))
+    }
 }

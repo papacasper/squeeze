@@ -11,6 +11,7 @@ import android.util.Size
 import java.io.File
 
 fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? {
+    if (uri.scheme == "file") return uri.lastPathSegment
     return resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
         val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
         if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null

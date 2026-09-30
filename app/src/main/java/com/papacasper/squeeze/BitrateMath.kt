@@ -14,6 +14,21 @@ object BitrateMath {
     // Audio may take at most this share of the size budget before it gets re-encoded.
     private const val MAX_AUDIO_SHARE = 0.35
 
+    /** Everything the user may lower quality down to; the defaults are the app's stock floors. */
+    data class Floors(
+        val minHeight: Int = 720,
+        val minFps: Float = MIN_FPS,
+        val minAudioBitrate: Long = AUDIO_STEPS.last()
+    ) {
+        /** Output heights, tallest first, ending at [minHeight]. */
+        fun ladder(): IntArray = (FULL_LADDER.filter { it > minHeight } + minHeight).toIntArray()
+
+        /** Audio bitrates the retries may step down through, highest first, none below [minAudioBitrate]. */
+        fun audioSteps(): LongArray = AUDIO_STEPS.filter { it >= minAudioBitrate }.toLongArray()
+    }
+
+    private val FULL_LADDER = intArrayOf(1080, 720, 540, 480, 360)
+
     /** Lowest frame rate a starved encode may be capped to. */
     const val MIN_FPS = 24f
 
@@ -81,10 +96,10 @@ object BitrateMath {
      * Next audio bitrate down the [AUDIO_STEPS] ladder below [current] (null = audio is being copied at
      * [sourceAudioBitrate]), or null when there is nothing lower to try or no audio at all.
      */
-    fun nextLowerAudioBitrate(current: Long?, sourceAudioBitrate: Long): Long? {
+    fun nextLowerAudioBitrate(current: Long?, sourceAudioBitrate: Long, floors: Floors = Floors()): Long? {
         if (sourceAudioBitrate <= 0) return null
         val from = current ?: sourceAudioBitrate
-        return AUDIO_STEPS.firstOrNull { it < from }
+        return floors.audioSteps().firstOrNull { it < from }
     }
 
     /** True when [bitrate] gives frames at [rungHeight] fewer than [MIN_BITS_PER_PIXEL] at the assumed source frame rate. */
@@ -92,6 +107,98 @@ object BitrateMath {
         if (sourcePixels <= 0 || sourceHeight <= 0) return false
         val rungPixels = sourcePixels.toDouble() * rungHeight * rungHeight / (sourceHeight.toDouble() * sourceHeight)
         return rungPixels * ASSUMED_FPS > bitrate / MIN_BITS_PER_PIXEL
+    }
+
+    enum class Feasibility { OK, ROUGH, UNREACHABLE }
+
+    /**
+     * Pre-encode verdict for [targetBytes]. [minBytes] is the smallest output the floors allow
+     * (MIN_BITRATE video plus the lowest audio step); a target under it can't be met. ROUGH means
+     * it can be met but only by starving the video at the lowest allowed resolution.
+     */
+    data class Assessment(val level: Feasibility, val minBytes: Long, val videoBitrate: Long)
+
+    fun assess(
+        targetBytes: Long,
+        durationSec: Double,
+        sourceAudioBitrate: Long,
+        sourcePixels: Long,
+        sourceHeight: Int,
+        sourceBytes: Long = Long.MAX_VALUE,
+        floors: Floors = Floors()
+    ): Assessment {
+        val dur = durationSec.coerceAtLeast(1.0)
+        val lowestAudio = if (sourceAudioBitrate <= 0) 0L else minOf(sourceAudioBitrate, floors.audioSteps().lastOrNull() ?: floors.minAudioBitrate)
+        val minBytes = ((MIN_BITRATE + lowestAudio) * dur / 8.0).toLong()
+        val audioBps = audioReencodeBitrate(sourceAudioBitrate, targetBytes, dur) ?: sourceAudioBitrate
+        val videoBps = initialVideoBitrate(targetBytes, dur, audioBps * dur / 8.0, sourceBytes)
+        val level = when {
+            minBytes > targetBytes * TARGET_FILL -> Feasibility.UNREACHABLE
+            // The source's own size is the limit, not the target: nothing to warn about.
+            sourceBytes.toDouble() * SOURCE_FILL < targetBytes.toDouble() * TARGET_FILL -> Feasibility.OK
+            starvedAt(videoBps, sourcePixels, sourceHeight, floors.minHeight.coerceAtMost(sourceHeight)) -> Feasibility.ROUGH
+            else -> Feasibility.OK
+        }
+        return Assessment(level, minBytes, videoBps)
+    }
+
+    /**
+     * Bitrate corrected by a short encoded sample: [sampleBytes] came from [sampleSec] seconds at
+     * [bitrate] (audio included at [audioBitrate]). Scales so the predicted whole-clip video fits the
+     * target's video budget, limited to a 0.3x–1.5x move since one sample is only a guide.
+     */
+    fun calibratedBitrate(
+        bitrate: Long, sampleBytes: Long, sampleSec: Double, audioBitrate: Long, durationSec: Double, targetBytes: Long
+    ): Long {
+        val sampleVideo = (sampleBytes - audioBitrate * sampleSec / 8.0).coerceAtLeast(sampleBytes * 0.1)
+        val predictedVideo = sampleVideo * durationSec / sampleSec
+        val budgetVideo = (targetBytes * TARGET_FILL - audioBitrate * durationSec / 8.0).coerceAtLeast(targetBytes * 0.1)
+        val ratio = (budgetVideo / predictedVideo).coerceIn(0.3, 1.5)
+        return (bitrate * ratio).toLong().coerceIn(MIN_BITRATE, MAX_BITRATE)
+    }
+
+    /** Predicted whole-clip size from the same sample, for messaging. */
+    fun predictedBytes(sampleBytes: Long, sampleSec: Double, audioBitrate: Long, durationSec: Double): Long {
+        val sampleVideo = (sampleBytes - audioBitrate * sampleSec / 8.0).coerceAtLeast(sampleBytes * 0.1)
+        return (sampleVideo * durationSec / sampleSec + audioBitrate * durationSec / 8.0).toLong()
+    }
+
+    const val CALIBRATE_MIN_SEC = 120.0
+    const val CALIBRATE_SAMPLE_SEC = 8.0
+
+    const val MAX_PARTS = 8
+    const val MIN_PART_SEC = 10.0
+
+    /**
+     * Fewest equal-length parts that each fit [targetBytes] without looking rough, or 1 when
+     * splitting can't help (already fine, or still not OK at [MAX_PARTS] / [MIN_PART_SEC] parts).
+     */
+    fun partsNeeded(
+        targetBytes: Long,
+        durationSec: Double,
+        sourceAudioBitrate: Long,
+        sourcePixels: Long,
+        sourceHeight: Int,
+        sourceBytes: Long = Long.MAX_VALUE,
+        floors: Floors = Floors()
+    ): Int {
+        fun level(n: Int) = assess(
+            targetBytes, durationSec / n, sourceAudioBitrate, sourcePixels, sourceHeight,
+            if (sourceBytes == Long.MAX_VALUE) sourceBytes else sourceBytes / n, floors
+        ).level
+        if (level(1) == Feasibility.OK) return 1
+        for (n in 2..MAX_PARTS) {
+            if (durationSec / n < MIN_PART_SEC) break
+            if (level(n) == Feasibility.OK) return n
+        }
+        return 1
+    }
+
+    /** "clip-squeezed.mp4" -> "clip-squeezed-part2of3.mp4". */
+    fun partName(baseName: String, index: Int, count: Int): String {
+        val stem = baseName.substringBeforeLast('.', baseName)
+        val ext = baseName.substringAfterLast('.', "")
+        return "$stem-part${index + 1}of$count" + if (ext.isEmpty()) "" else ".$ext"
     }
 
     /** Next bitrate after an oversized pass: scale by the video share's miss, with 15% extra headroom. */

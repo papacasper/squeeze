@@ -86,7 +86,7 @@ fun VideoModeToggle(convertToGif: Boolean, onChange: (Boolean) -> Unit) {
 }
 
 @Composable
-fun PresetButtons(enabled: Boolean, onPick: (Preset) -> Unit) {
+fun PresetButtons(enabled: Boolean, hint: (Preset) -> String? = { null }, onPick: (Preset) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Target size", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         Preset.entries.forEach { preset ->
@@ -105,6 +105,9 @@ fun PresetButtons(enabled: Boolean, onPick: (Preset) -> Unit) {
                     Text(preset.label)
                     Text(preset.short, style = MaterialTheme.typography.labelMedium)
                 }
+            }
+            hint(preset)?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -257,5 +260,47 @@ fun ErrorCard(message: String) {
             }
             Text(message, style = MaterialTheme.typography.bodyMedium)
         }
+    }
+}
+
+/** Three rows of chips for the lowest resolution, frame rate and audio bitrate the user will accept. */
+@Composable
+fun FloorsCard(floors: BitrateMath.Floors, onChange: (BitrateMath.Floors) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Never go below", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        ChipRow("Resolution", FloorsStore.HEIGHTS.toList(), floors.minHeight, { "${it}p" }) { onChange(floors.copy(minHeight = it)) }
+        ChipRow("Frame rate", FloorsStore.FPS.toList(), floors.minFps, { "${it.toInt()} fps" }) { onChange(floors.copy(minFps = it)) }
+        ChipRow("Audio", FloorsStore.AUDIO.toList(), floors.minAudioBitrate, { "${it / 1000} kbps" }) { onChange(floors.copy(minAudioBitrate = it)) }
+    }
+}
+
+@Composable
+private fun <T> ChipRow(label: String, options: List<T>, selected: T, text: (T) -> String, onPick: (T) -> Unit) {
+    Column {
+        Text(label, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                androidx.compose.material3.FilterChip(
+                    selected = option == selected,
+                    onClick = { onPick(option) },
+                    label = { Text(text(option)) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SplitToggle(checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Split long videos into parts", style = MaterialTheme.typography.bodyMedium)
+            Text("Instead of degrading quality, cut into several files that each fit", style = MaterialTheme.typography.bodySmall)
+        }
+        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange)
     }
 }

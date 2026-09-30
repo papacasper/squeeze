@@ -30,8 +30,8 @@ android {
         applicationId = "com.papacasper.squeeze"
         minSdk = 29
         targetSdk = 35
-        versionCode = 28
-        versionName = "2026.09.29"
+        versionCode = 29
+        versionName = "2026.09.30"
     }
 
     signingConfigs {
