@@ -1,0 +1,2 @@
+Now licensed GPL-3.0-or-later, matching the bundled ffmpeg.
+Targets Android 17 (API 37).
