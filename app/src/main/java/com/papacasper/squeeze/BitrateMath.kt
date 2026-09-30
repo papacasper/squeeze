@@ -109,6 +109,42 @@ object BitrateMath {
         return rungPixels * ASSUMED_FPS > bitrate / MIN_BITS_PER_PIXEL
     }
 
+    /**
+     * What the first pass will use for a target, for the live "about ..." line. [audioBitrate] is null
+     * when audio is copied untouched (or absent); [capFps] means frames drop to the fps floor.
+     */
+    data class Estimate(val height: Int, val capFps: Boolean, val videoBitrate: Long, val audioBitrate: Long?)
+
+    fun estimate(
+        targetBytes: Long,
+        durationSec: Double,
+        sourceAudioBitrate: Long,
+        sourcePixels: Long,
+        sourceHeight: Int,
+        sourceBytes: Long = Long.MAX_VALUE,
+        floors: Floors = Floors()
+    ): Estimate {
+        val dur = durationSec.coerceAtLeast(1.0)
+        val audioBps = audioReencodeBitrate(sourceAudioBitrate, targetBytes, dur)
+        val videoBps = initialVideoBitrate(targetBytes, dur, (audioBps ?: sourceAudioBitrate) * dur / 8.0, sourceBytes)
+        val ladder = floors.ladder()
+        val idx = startingLadderIndex(videoBps, sourcePixels, sourceHeight, ladder)
+        val rung = ladder.getOrElse(idx) { ladder.last() }
+        return Estimate(
+            height = if (sourceHeight > 0) rung.coerceAtMost(sourceHeight) else rung,
+            capFps = starvedAt(videoBps, sourcePixels, sourceHeight, rung),
+            videoBitrate = videoBps,
+            audioBitrate = audioBps
+        )
+    }
+
+    fun describe(e: Estimate, floors: Floors): String = buildString {
+        append("${e.height}p")
+        append(if (e.capFps) " · ${floors.minFps.toInt()} fps" else " · original frame rate")
+        e.audioBitrate?.let { append(" · audio ${it / 1000} kbps") }
+        append(" · video ~${e.videoBitrate / 1000} kbps")
+    }
+
     enum class Feasibility { OK, ROUGH, UNREACHABLE }
 
     /**

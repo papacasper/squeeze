@@ -277,4 +277,35 @@ class BitrateMathTest {
         // 125 kB of video in 1 s, 100 s clip, no audio
         assertEquals(12_500_000L, BitrateMath.predictedBytes(125_000, 1.0, 0, 100.0))
     }
+
+    @Test
+    fun estimate_tightTargetCapsFpsAtFloorHeightAndStepsAudioDown() {
+        // 8K, 12:56, 256 kbps audio into 20 MB: video starved, audio capped, fps capped, 720p.
+        val e = BitrateMath.estimate(20L * 1024 * 1024, 776.0, 256_000, px8k, 4320)
+        assertEquals(720, e.height)
+        assertTrue(e.capFps)
+        assertTrue(e.audioBitrate != null && e.audioBitrate!! < 256_000)
+    }
+
+    @Test
+    fun estimate_generousTargetKeepsFrameRateAndCopiesAudio() {
+        val e = BitrateMath.estimate(2000L * 1024 * 1024, 60.0, 128_000, 1920L * 1080, 1080)
+        assertEquals(1080, e.height)
+        assertFalse(e.capFps)
+        assertNull(e.audioBitrate)
+    }
+
+    @Test
+    fun estimate_neverUpscalesSmallSource() {
+        val e = BitrateMath.estimate(500L * 1024 * 1024, 60.0, 128_000, 640L * 360, 360)
+        assertEquals(360, e.height)
+    }
+
+    @Test
+    fun describe_listsSettings() {
+        val f = BitrateMath.Floors()
+        val text = BitrateMath.describe(BitrateMath.Estimate(720, true, 387_000, 64_000), f)
+        assertEquals("720p · 24 fps · audio 64 kbps · video ~387 kbps", text)
+        assertEquals("1080p · original frame rate · video ~5000 kbps", BitrateMath.describe(BitrateMath.Estimate(1080, false, 5_000_000, null), f))
+    }
 }

@@ -49,7 +49,8 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
 
     var state by mutableStateOf<UiState>(UiState.Idle)
         private set
-    var customSliderFraction by mutableStateOf(0.3f)
+    var customSliderFraction by mutableStateOf(TargetStore.loadFraction(application, 0.3f))
+    var lastPreset by mutableStateOf(TargetStore.lastPreset(application))
     var convertToGif by mutableStateOf(false)
         private set
     var videoDurationMs by mutableStateOf(0L)
@@ -73,6 +74,11 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         val ms = (trimEndMs - trimStartMs).takeIf { it > 0 } ?: videoDurationMs
         if (ms <= 0) return 1
         return BitrateMath.partsNeeded(targetBytes, ms / 1000.0, probe.audioBitrate, probe.pixels, probe.height, originalBytes, floors)
+    }
+
+    fun rememberTarget(preset: Preset?) {
+        lastPreset = preset
+        TargetStore.save(getApplication(), preset, customSliderFraction)
     }
 
     fun updateFloors(new: BitrateMath.Floors) {

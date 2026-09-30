@@ -256,9 +256,12 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                         FloorsCard(vm.floors) { vm.updateFloors(it) }
                         SplitToggle(vm.splitLongVideos) { vm.splitLongVideos = it }
                     }
-                    PresetButtons(enabled = true, hint = { preset ->
+                    PresetButtons(enabled = true, last = vm.lastPreset, hint = { preset ->
                         feasibilityHint(vm, s, preset.bytes)
+                    }, info = { preset ->
+                        estimateLine(vm, s, preset.bytes)
                     }) { preset ->
+                        vm.rememberTarget(preset)
                         runCompression(s, preset.bytes, "${preset.label} (${preset.short})")
                     }
                     CustomSizeSlider(
@@ -266,6 +269,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                         onFractionChange = { vm.customSliderFraction = it },
                         enabled = true,
                         onCompress = { bytes, label ->
+                            vm.rememberTarget(null)
                             runCompression(s, bytes, label)
                         }
                     )
@@ -364,6 +368,18 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
     }
 }
 
+
+/** "About 720p · 24 fps · audio 64 kbps" for a target that is fine as is; null when there is nothing to say. */
+private fun estimateLine(vm: CompressorViewModel, file: UiState.FileSelected, targetBytes: Long): String? {
+    val probe = vm.sourceProbe ?: return null
+    if (vm.convertToGif || !file.mime.startsWith("video")) return null
+    val durationMs = (vm.trimEndMs - vm.trimStartMs).takeIf { it > 0 } ?: vm.videoDurationMs
+    if (durationMs <= 0) return null
+    val e = BitrateMath.estimate(
+        targetBytes, durationMs / 1000.0, probe.audioBitrate, probe.pixels, probe.height, file.originalBytes, vm.floors
+    )
+    return "About " + BitrateMath.describe(e, vm.floors)
+}
 
 /** One-line warning for a target the floors (720p, 24 fps, audio steps, 100 kbps) can't meet or can only meet roughly. */
 private fun feasibilityHint(vm: CompressorViewModel, file: UiState.FileSelected, targetBytes: Long): String? {

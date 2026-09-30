@@ -7,6 +7,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -87,18 +89,17 @@ fun VideoModeToggle(convertToGif: Boolean, onChange: (Boolean) -> Unit) {
 }
 
 @Composable
-fun PresetButtons(enabled: Boolean, hint: (Preset) -> String? = { null }, onPick: (Preset) -> Unit) {
+fun PresetButtons(
+    enabled: Boolean,
+    last: Preset? = null,
+    hint: (Preset) -> String? = { null },
+    info: (Preset) -> String? = { null },
+    onPick: (Preset) -> Unit
+) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Target size", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
         Preset.entries.forEach { preset ->
-            Button(
-                onClick = { onPick(preset) },
-                enabled = enabled,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-            ) {
+            val content: @Composable RowScope.() -> Unit = {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -107,8 +108,21 @@ fun PresetButtons(enabled: Boolean, hint: (Preset) -> String? = { null }, onPick
                     Text(preset.short, style = MaterialTheme.typography.labelMedium)
                 }
             }
-            hint(preset)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            val shape = RoundedCornerShape(14.dp)
+            val mod = Modifier.fillMaxWidth().height(52.dp)
+            // The last-used target is filled; the rest are tonal so it stands out.
+            if (preset == last) {
+                Button(onClick = { onPick(preset) }, enabled = enabled, shape = shape, modifier = mod, content = content)
+            } else {
+                FilledTonalButton(onClick = { onPick(preset) }, enabled = enabled, shape = shape, modifier = mod, content = content)
+            }
+            val warning = hint(preset)
+            if (warning != null) {
+                Text(warning, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            } else {
+                info(preset)?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }
