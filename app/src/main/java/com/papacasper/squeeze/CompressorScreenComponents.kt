@@ -3,6 +3,7 @@ package com.papacasper.squeeze
 import android.graphics.Bitmap
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -195,7 +196,12 @@ fun WorkingCard(message: String, progress: Float, indeterminate: Boolean) {
 @Composable
 fun ResultCard(originalBytes: Long, resultBytes: Long, fitsTarget: Boolean, targetLabel: String) {
     val reduction = if (originalBytes > 0) (1.0 - resultBytes.toDouble() / originalBytes.toDouble()) * 100 else 0.0
-    val accent = if (fitsTarget) Color(0xFF2E7D32) else Color(0xFFC62828)
+    val dark = isSystemInDarkTheme()
+    // The light-theme greens/reds vanish against a dark card; use lighter tones there.
+    val accent = when {
+        fitsTarget -> if (dark) Color(0xFF81C784) else Color(0xFF2E7D32)
+        else -> if (dark) Color(0xFFEF9A9A) else Color(0xFFC62828)
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
