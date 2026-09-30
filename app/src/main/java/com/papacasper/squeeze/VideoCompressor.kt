@@ -40,10 +40,9 @@ object VideoCompressor {
 
     private class StallException : Exception("Encoder stalled")
 
-    // Many hardware encoders clamp bitrate to a device/resolution-specific floor and
-    // silently ignore a lower request. If bitrate reduction alone isn't shrinking the
-    // output, step resolution down this ladder too so the encoder's floor drops with it.
-    private val HEIGHT_LADDER = intArrayOf(1080, 720, 540, 480, 360, 240)
+    // Many hardware encoders clamp bitrate to a device/resolution-specific floor and silently
+    // ignore a lower request, so a starved budget also steps resolution down (never below 720p).
+    private val HEIGHT_LADDER = BitrateMath.HEIGHT_LADDER
 
     /**
      * Re-encodes the video, retrying at progressively lower bitrates (and, once that stops
@@ -69,7 +68,11 @@ object VideoCompressor {
 
         // Audio is passed through untouched, so its size is fixed: budget it explicitly, then give
         // the video what's left of ~92% of the target (the rest covers container overhead).
-        val audioBytes = estimateAudioBitrate(context, sourceUri) * durationSec / 8.0
+        val sourceAudioBitrate = estimateAudioBitrate(context, sourceUri)
+        // Audio too big for the budget is re-encoded smaller (null = copied untouched).
+        val audioReencodeBitrate = BitrateMath.audioReencodeBitrate(sourceAudioBitrate, targetBytes, durationSec)
+        var audioBitrate = audioReencodeBitrate
+        var audioBytes = (audioBitrate ?: sourceAudioBitrate) * durationSec / 8.0
         val fileBytes = context.contentResolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length }
             ?.takeIf { it > 0 } ?: Long.MAX_VALUE
         // For a trimmed clip, only that share of the source's bytes is comparable to the output.
@@ -83,22 +86,28 @@ object VideoCompressor {
         var bestFile: File? = null
         var bestBytes = Long.MAX_VALUE
         var previousPassBytes = Long.MAX_VALUE
-        var ladderIndex = 0
+        // Start at a rung the requested bitrate can support, not always at 1080p.
+        val sourcePixels = getVideoWidth(context, sourceUri).toLong() * getVideoHeightRaw(context, sourceUri)
+        var ladderIndex = BitrateMath.startingLadderIndex(bitrate, sourcePixels, originalHeight, HEIGHT_LADDER)
+        // Still starved at the chosen rung: cap to MIN_FPS (a no-op for sources already at or below it).
+        var capFps = BitrateMath.starvedAt(bitrate, sourcePixels, originalHeight, HEIGHT_LADDER[ladderIndex])
 
         for (attempt in 1..maxAttempts) {
             val targetHeight = HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }
                 .coerceAtMost(originalHeight)
+            val cappedThisPass = capFps
+            val audioLabel = audioBitrate?.let { ", audio ${it / 1000} kbps" } ?: ""
             val passBase = (attempt - 1).toFloat() / maxAttempts
             onProgress(
-                "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
+                "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${BitrateMath.MIN_FPS.toInt()} fps" else ""}$audioLabel)...",
                 passBase
             )
             val passFile = File(outputFile.parentFile, "pass${attempt}_${outputFile.name}")
             try {
                 try {
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, capFps, audioBitrate, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
-                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p)...",
+                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${BitrateMath.MIN_FPS.toInt()} fps" else ""}$audioLabel)...",
                             passBase + intraFraction / maxAttempts
                         )
                     }
@@ -108,7 +117,7 @@ object VideoCompressor {
                         "Encoder stalled, retrying pass $attempt with H.264...",
                         passBase
                     )
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, capFps, audioBitrate, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
                             "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p, H.264)...",
                             passBase + intraFraction / maxAttempts
@@ -143,7 +152,18 @@ object VideoCompressor {
             }
             previousPassBytes = passBytes
 
-            if (bitrate <= BitrateMath.MIN_BITRATE && ladderIndex == HEIGHT_LADDER.lastIndex) {
+            // At the resolution floor the only lever left besides bitrate is the frame rate.
+            if (ladderIndex == HEIGHT_LADDER.lastIndex) capFps = true
+
+            if (bitrate <= BitrateMath.MIN_BITRATE && ladderIndex == HEIGHT_LADDER.lastIndex && cappedThisPass) {
+                // Video has nothing left to give; try squeezing the audio harder before giving up.
+                val lowerAudio = BitrateMath.nextLowerAudioBitrate(audioBitrate, sourceAudioBitrate)
+                if (lowerAudio != null) {
+                    audioBitrate = lowerAudio
+                    audioBytes = lowerAudio * durationSec / 8.0
+                    bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes, sourceBytes)
+                    continue
+                }
                 onProgress("Reached minimum bitrate and resolution; can't shrink further.", 1f)
                 break
             }
@@ -168,6 +188,8 @@ object VideoCompressor {
         bitrate: Long,
         targetHeight: Int,
         originalHeight: Int,
+        capFps: Boolean,
+        audioBitrate: Long?,
         videoMimeType: String,
         trimStartMs: Long,
         trimDurationMs: Long,
@@ -184,6 +206,16 @@ object VideoCompressor {
                 .setVideoMimeType(videoMimeType)
                 .setEncoderFactory(
                     androidx.media3.transformer.DefaultEncoderFactory.Builder(context)
+                        .apply {
+                            // Non-default audio settings make Transformer re-encode audio instead of copying it.
+                            if (audioBitrate != null) {
+                                setRequestedAudioEncoderSettings(
+                                    androidx.media3.transformer.AudioEncoderSettings.Builder()
+                                        .setBitrate(audioBitrate.toInt())
+                                        .build()
+                                )
+                            }
+                        }
                         .setRequestedVideoEncoderSettings(
                             VideoEncoderSettings.Builder()
                                 .setBitrate(bitrate.toInt())
@@ -219,11 +251,11 @@ object VideoCompressor {
                 }
             }.build()
             val itemBuilder = EditedMediaItem.Builder(mediaItem)
-            if (targetHeight < originalHeight) {
-                itemBuilder.setEffects(
-                    Effects(emptyList(), listOf(Presentation.createForHeight(targetHeight)))
-                )
+            val videoEffects = buildList<androidx.media3.common.Effect> {
+                if (targetHeight < originalHeight) add(Presentation.createForHeight(targetHeight))
+                if (capFps) add(androidx.media3.effect.FrameDropEffect.createDefaultFrameDropEffect(BitrateMath.MIN_FPS))
             }
+            if (videoEffects.isNotEmpty()) itemBuilder.setEffects(Effects(emptyList(), videoEffects))
             transformer.start(itemBuilder.build(), outFile.absolutePath)
 
             val progressHolder = ProgressHolder()
