@@ -74,7 +74,10 @@ class DownloadService : Service() {
 
                 fun onProgress(msg: String, fraction: Float) {
                     DownloadRepository.state.value = DownloadState.Working(msg, fraction)
-                    notify(buildNotification(msg, (fraction * 100).toInt(), indeterminate = false))
+                    val percent = (fraction * 100).toInt()
+                    if (notificationThrottle.shouldPost(android.os.SystemClock.elapsedRealtime(), percent, msg)) {
+                        notify(buildNotification(msg, percent, indeterminate = false))
+                    }
                 }
 
                 withContext(Dispatchers.IO) {
@@ -130,6 +133,8 @@ class DownloadService : Service() {
         job?.cancel()
         serviceScope.cancel()
     }
+
+    private val notificationThrottle = NotificationThrottle()
 
     private fun notify(notification: Notification) {
         val manager = getSystemService(NotificationManager::class.java)

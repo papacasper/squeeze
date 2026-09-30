@@ -142,7 +142,10 @@ class CompressionService : Service() {
                     publishState(CompressionState.Working(
                         originalBytes, msg, fraction, indeterminate = false, uri = uri, mime = mime
                     ))
-                    notify(buildNotification(msg, (fraction * 100).toInt(), indeterminate = false))
+                    val percent = (fraction * 100).toInt()
+                    if (notificationThrottle.shouldPost(android.os.SystemClock.elapsedRealtime(), percent, msg)) {
+                        notify(buildNotification(msg, percent, indeterminate = false))
+                    }
                 }
 
                 withContext(Dispatchers.IO) {
@@ -208,6 +211,8 @@ class CompressionService : Service() {
         lastState = state as? CompressionState.Working
         CompressionBridge.publish(applicationContext, state)
     }
+
+    private val notificationThrottle = NotificationThrottle()
 
     private fun notify(notification: Notification) {
         val manager = getSystemService(NotificationManager::class.java)
