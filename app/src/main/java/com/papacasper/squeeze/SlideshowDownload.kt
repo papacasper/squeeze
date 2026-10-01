@@ -22,17 +22,28 @@ object SlideshowDownload {
             setRequestProperty("Referer", "https://www.tiktok.com/")
         }
 
-    /** The photo post behind [url], or null when it isn't one or the page can't be read (blocked, offline, changed). */
+    /**
+     * The photo post behind [url], or null when it isn't one or the page can't be read (blocked, offline, changed).
+     * TikTok serves a stripped page with no post data at /photo/ URLs, but the same post under /video/ has it all,
+     * so a redirect-resolved /photo/ URL is retried as /video/.
+     */
     fun fetchPost(url: String): TikTokSlideshow.Post? = try {
+        val (finalUrl, firstPage) = fetchPage(url)
+        TikTokSlideshow.parse(firstPage) ?: TikTokSlideshow.asVideoUrl(finalUrl)?.let { TikTokSlideshow.parse(fetchPage(it).second) }
+    } catch (e: java.io.IOException) {
+        null
+    }
+
+    /** The URL after redirects and the page body; an empty body for a non-200 answer. */
+    private fun fetchPage(url: String): Pair<String, String> {
         val conn = open(url).apply { setRequestProperty("Accept", "text/html,application/xhtml+xml") }
         try {
-            if (conn.responseCode != 200) null
-            else TikTokSlideshow.parse(conn.inputStream.use { it.readNBytes(MAX_PAGE_BYTES).toString(Charsets.UTF_8) })
+            val finalUrl = conn.url.toString()
+            if (conn.responseCode != 200) return finalUrl to ""
+            return finalUrl to conn.inputStream.use { it.readNBytes(MAX_PAGE_BYTES).toString(Charsets.UTF_8) }
         } finally {
             conn.disconnect()
         }
-    } catch (e: java.io.IOException) {
-        null
     }
 
     suspend fun downloadTo(url: String, dest: File) {

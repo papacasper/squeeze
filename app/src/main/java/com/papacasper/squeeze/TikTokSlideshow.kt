@@ -16,6 +16,14 @@ object TikTokSlideshow {
         return host == "tiktok.com" || host.endsWith(".tiktok.com")
     }
 
+    /** The /video/ twin of a /photo/ post URL (same id, query dropped), or null for any other URL. */
+    fun asVideoUrl(url: String): String? {
+        val u = runCatching { java.net.URI(url.trim()) }.getOrNull() ?: return null
+        val path = u.path ?: return null
+        if (!path.contains("/photo/")) return null
+        return "https://${u.host}${path.replace("/photo/", "/video/")}"
+    }
+
     private val DATA_SCRIPT = Regex(
         """<script[^>]*id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>""",
         RegexOption.DOT_MATCHES_ALL

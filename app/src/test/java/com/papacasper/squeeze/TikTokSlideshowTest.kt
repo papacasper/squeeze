@@ -63,3 +63,19 @@ class TikTokSlideshowTest {
         assertEquals("video/mp4", DownloadFormat.mimeFor("download"))
     }
 }
+
+class TikTokVideoUrlTest {
+    @Test
+    fun photoUrlBecomesVideoUrl() {
+        assertEquals(
+            "https://www.tiktok.com/@kevinzimple/video/7691656733684534558",
+            TikTokSlideshow.asVideoUrl("https://www.tiktok.com/@kevinzimple/photo/7691656733684534558?_r=1&_t=ZT-9AChwDPd79B")
+        )
+    }
+
+    @Test
+    fun otherUrlsAreLeftAlone() {
+        assertNull(TikTokSlideshow.asVideoUrl("https://www.tiktok.com/@a/video/123"))
+        assertNull(TikTokSlideshow.asVideoUrl("not a url"))
+    }
+}
