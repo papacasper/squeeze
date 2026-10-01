@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.URLConnection
 
 sealed class DownloadState {
     data object Idle : DownloadState()
@@ -80,7 +79,13 @@ class DownloadService : Service() {
                     }
                 }
 
-                withContext(Dispatchers.IO) {
+                val slideshow = if (TikTokSlideshow.isTikTokUrl(url)) {
+                    onProgress("Checking the post...", 0f)
+                    withContext(Dispatchers.IO) { SlideshowDownload.fetchPost(url.trim()) }
+                } else null
+                if (slideshow != null) {
+                    buildSlideshow(slideshow, outDir, ::onProgress)
+                } else withContext(Dispatchers.IO) {
                     fun runDownload() {
                         val request = YoutubeDLRequest(url).apply {
                             addOption("-f", DownloadFormat.selector())
@@ -110,7 +115,14 @@ class DownloadService : Service() {
 
                 val resultFile = outDir.listFiles()?.firstOrNull()
                     ?: throw IllegalStateException("Download finished but produced no file")
-                val mime = URLConnection.guessContentTypeFromName(resultFile.name) ?: "video/mp4"
+                val mime = DownloadFormat.mimeFor(resultFile.name)
+                if (!mime.startsWith("video") && !mime.startsWith("image")) {
+                    throw IllegalStateException(
+                        if (TikTokSlideshow.isTikTokUrl(url))
+                            "This TikTok is a photo slideshow and its pictures couldn't be fetched, only the sound. Try again later or from another network."
+                        else "That link only has audio; Squeeze compresses videos and images."
+                    )
+                }
                 val uri = FileProvider.getUriForFile(applicationContext, "$packageName.fileprovider", resultFile)
 
                 DownloadRepository.state.value = DownloadState.Done(uri, mime)
@@ -126,6 +138,24 @@ class DownloadService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    private suspend fun buildSlideshow(post: TikTokSlideshow.Post, outDir: File, onProgress: (String, Float) -> Unit) {
+        val work = File(outDir, "slides").apply { mkdirs() }
+        val images = withContext(Dispatchers.IO) {
+            post.imageUrls.mapIndexed { i, imageUrl ->
+                onProgress("Downloading picture ${i + 1} of ${post.imageUrls.size}...", i / post.imageUrls.size.toFloat() * 0.6f)
+                File(work, "img%03d.jpg".format(i)).also { SlideshowDownload.downloadTo(imageUrl, it) }
+            }
+        }
+        val audio = post.audioUrl?.let { audioUrl ->
+            onProgress("Downloading the sound...", 0.6f)
+            // The picture-only post is still worth making if the soundtrack is gone.
+            runCatching { withContext(Dispatchers.IO) { File(work, "audio").also { SlideshowDownload.downloadTo(audioUrl, it) } } }.getOrNull()
+        }
+        onProgress("Putting the slideshow together...", 0.7f)
+        SlideshowVideo.build(applicationContext, images, audio, post.audioSec, File(outDir, "download.mp4"))
+        work.deleteRecursively()
     }
 
     override fun onDestroy() {
