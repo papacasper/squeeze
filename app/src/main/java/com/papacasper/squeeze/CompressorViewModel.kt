@@ -13,6 +13,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+internal data class BatchFile(val uri: Uri, val mime: String, val bytes: Long, val name: String)
+
 internal sealed class UiState {
     data object Idle : UiState()
     data class FileSelected(val uri: Uri, val mime: String, val originalBytes: Long, val thumbnail: Bitmap?) : UiState()
@@ -36,6 +38,9 @@ internal sealed class UiState {
         val settings: String = ""
     ) : UiState()
     data class Failed(val message: String) : UiState()
+    /** Several files picked or shared at once, waiting for a target size. */
+    data class BatchSelected(val files: List<BatchFile>, val skipped: Int) : UiState()
+    data class BatchDone(val items: List<BatchItem>, val targetLabel: String) : UiState()
     data class Downloading(val message: String, val progress: Float) : UiState()
     /** Copying a cloud-backed file (e.g. from Google Photos) to local storage; progress < 0 means unknown. */
     data class Importing(val message: String, val progress: Float) : UiState()
@@ -92,6 +97,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
     private var workingThumbnail: Bitmap? = null
     private var handledInitialUri: Uri? = null
     private var handledInitialUrl: String? = null
+    private var handledInitialUris: List<Uri>? = null
 
     init {
         // Done/Failed are one-shot results: once shown they're reset to Idle so a later
@@ -112,6 +118,11 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
                     }
                     is CompressionState.Failed -> {
                         state = UiState.Failed(s.message)
+                        CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
+                    }
+                    is CompressionState.BatchDone -> {
+                        val items = s.items.filter { it.done == null || it.done.resultFile.exists() }
+                        if (items.isNotEmpty()) state = UiState.BatchDone(items, s.targetLabel)
                         CompressionRepository.state.compareAndSet(s, CompressionState.Idle)
                     }
                     CompressionState.Idle -> if (state is UiState.Working) state = UiState.Idle
@@ -149,6 +160,13 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         if (uri == null || uri == handledInitialUri) return
         handledInitialUri = uri
         selectFile(uri)
+    }
+
+    /** Handles several Uris the app was shared with, once. */
+    fun onInitialUris(uris: List<Uri>) {
+        if (uris.isEmpty() || uris == handledInitialUris) return
+        handledInitialUris = uris
+        selectFiles(uris)
     }
 
     private var importJob: kotlinx.coroutines.Job? = null
@@ -195,6 +213,80 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
             }
             finishSelect(local, mime, size)
         }
+    }
+
+    /** One pick/share of any number of files: a single file takes the normal flow, several become a batch. */
+    fun selectFiles(uris: List<Uri>) {
+        val picked = uris.distinct()
+        if (picked.size <= 1) {
+            picked.firstOrNull()?.let { selectFile(it) }
+            return
+        }
+        val context = getApplication<Application>()
+        importJob?.cancel()
+        importJob = viewModelScope.launch {
+            val files = mutableListOf<BatchFile>()
+            var skipped = 0
+            withContext(Dispatchers.IO) { FileImport.clear(context) }
+            picked.forEachIndexed { i, uri ->
+                val label = "file ${i + 1} of ${picked.size}"
+                state = UiState.Importing("Reading $label...", -1f)
+                try {
+                    val name = withContext(Dispatchers.IO) { queryDisplayName(context.contentResolver, uri) } ?: "file ${i + 1}"
+                    val mime = withContext(Dispatchers.IO) { context.contentResolver.getType(uri) }
+                        ?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+                        ?: android.webkit.MimeTypeMap.getSingleton()
+                            .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()).orEmpty()
+                    if (!mime.startsWith("image") && !mime.startsWith("video")) {
+                        skipped++
+                        return@forEachIndexed
+                    }
+                    var local = uri
+                    if (withContext(Dispatchers.IO) { FileImport.needsImport(context, uri) }) {
+                        local = withContext(Dispatchers.IO) {
+                            FileImport.importToCache(context, uri, keepEarlier = true) { fraction ->
+                                state = UiState.Importing(
+                                    if (fraction >= 0f) "Copying $label... ${(fraction * 100).toInt()}%" else "Copying $label...",
+                                    fraction
+                                )
+                            }
+                        }
+                    }
+                    val size = withContext(Dispatchers.IO) {
+                        context.contentResolver.openAssetFileDescriptor(local, "r")?.use { it.length } ?: 0L
+                    }
+                    files += BatchFile(local, mime, size, name)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    skipped++
+                }
+            }
+            when (files.size) {
+                0 -> state = UiState.Failed("None of those files could be read as an image or a video.")
+                1 -> finishSelect(files[0].uri, files[0].mime, files[0].bytes)
+                else -> {
+                    convertToGif = false
+                    sourceProbe = null
+                    state = UiState.BatchSelected(files, skipped)
+                }
+            }
+        }
+    }
+
+    /** Starts one service run over all of [files]; false if a compression is already running. */
+    fun startBatch(files: List<BatchFile>, targetBytes: Long, targetLabel: String): Boolean {
+        if (CompressionRepository.state.value is CompressionState.Working) return false
+        workingThumbnail = null
+        state = UiState.Working(
+            files.first().bytes, "Starting compression...", 0f, indeterminate = false,
+            thumbnail = null, uri = files.first().uri, mime = files.first().mime
+        )
+        CompressionService.startBatch(
+            getApplication(), files.map { it.uri }, files.map { it.mime }, files.map { it.bytes },
+            targetBytes, targetLabel, floors
+        )
+        return true
     }
 
     private fun finishSelect(uri: Uri, mime: String, size: Long) {

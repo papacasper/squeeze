@@ -34,9 +34,12 @@ object FileImport {
     }
 
     /** Copies [uri] into the cache and returns the copy; [onProgress] gets 0..1, or -1 when the size is unknown. */
-    suspend fun importToCache(context: Context, uri: Uri, onProgress: (Float) -> Unit): Uri {
-        clear(context)
-        val dir = importsDir(context).apply { mkdirs() }
+    suspend fun importToCache(context: Context, uri: Uri, keepEarlier: Boolean = false, onProgress: (Float) -> Unit): Uri {
+        if (!keepEarlier) clear(context)
+        val root = importsDir(context).apply { mkdirs() }
+        // Each file gets its own folder so a batch of same-named files (IMG_001.jpg from two apps) can't collide
+        // and the original display name survives in the copy's file name.
+        val dir = File(root, (root.list()?.size ?: 0).toString()).apply { mkdirs() }
         val name = (queryDisplayName(context.contentResolver, uri) ?: "import").replace('/', '_')
         val dest = File(dir, name)
 

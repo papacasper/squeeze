@@ -39,6 +39,7 @@ object CompressionBridge {
     private const val EXTRA_NAME = "name"
     private const val EXTRA_SOURCE_NAME = "source_name"
     private const val EXTRA_SETTINGS = "settings"
+    private const val EXTRA_BATCH = "batch"
     private const val EXTRA_EXTRA_PATHS = "extra_paths"  // newline-joined paths of parts 2..n
 
     // ---- service side ----
@@ -59,10 +60,12 @@ object CompressionBridge {
                 .putExtra(EXTRA_SETTINGS, state.settings)
                 .putExtra(EXTRA_EXTRA_PATHS, state.extraFiles.joinToString("\n") { it.absolutePath })
             is CompressionState.Failed -> intent.putExtra(EXTRA_KIND, "failed").putExtra(EXTRA_MESSAGE, state.message)
+            is CompressionState.BatchDone -> intent.putExtra(EXTRA_KIND, "batch_done")
+                .putExtra(EXTRA_LABEL, state.targetLabel).putExtra(EXTRA_BATCH, BatchResult.toJson(state.items))
         }
         // Terminal results are also written to disk: if the UI process was swiped away mid-job there is
         // no receiver to catch the broadcast, so the UI picks the result up from here on its next launch.
-        if (state is CompressionState.Done || state is CompressionState.Failed) savePending(context, intent)
+        if (state is CompressionState.Done || state is CompressionState.Failed || state is CompressionState.BatchDone) savePending(context, intent)
         context.sendBroadcast(intent)
     }
 
@@ -70,7 +73,7 @@ object CompressionBridge {
 
     private fun savePending(context: Context, intent: Intent) {
         val json = JSONObject()
-        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME, EXTRA_EXTRA_PATHS, EXTRA_SETTINGS)) {
+        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME, EXTRA_EXTRA_PATHS, EXTRA_SETTINGS, EXTRA_BATCH)) {
             intent.getStringExtra(key)?.let { json.put(key, it) }
         }
         json.put(EXTRA_ORIGINAL_BYTES, intent.getLongExtra(EXTRA_ORIGINAL_BYTES, 0L))
@@ -85,7 +88,7 @@ object CompressionBridge {
         file.delete()
         json ?: return
         val intent = Intent(ACTION_STATE)
-        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME, EXTRA_EXTRA_PATHS, EXTRA_SETTINGS)) {
+        for (key in listOf(EXTRA_KIND, EXTRA_MESSAGE, EXTRA_PATH, EXTRA_MIME, EXTRA_LABEL, EXTRA_NAME, EXTRA_SOURCE_NAME, EXTRA_EXTRA_PATHS, EXTRA_SETTINGS, EXTRA_BATCH)) {
             if (json.has(key)) intent.putExtra(key, json.getString(key))
         }
         intent.putExtra(EXTRA_ORIGINAL_BYTES, json.optLong(EXTRA_ORIGINAL_BYTES)).putExtra(EXTRA_FITS, json.optBoolean(EXTRA_FITS))
@@ -156,6 +159,17 @@ object CompressionBridge {
                     original, file, intent.getStringExtra(EXTRA_MIME).orEmpty(), fits, label, intent.getStringExtra(EXTRA_NAME).orEmpty(), extras,
                     intent.getStringExtra(EXTRA_SETTINGS).orEmpty()
                 )
+            }
+            "batch_done" -> {
+                unbind()
+                pendingFile(app).delete()
+                val items = BatchResult.fromJson(intent.getStringExtra(EXTRA_BATCH).orEmpty())
+                val now = System.currentTimeMillis()
+                items.forEach { item ->
+                    val d = item.done ?: return@forEach
+                    HistoryStore.addEntry(app, HistoryEntry(now, item.sourceName, item.originalBytes, d.resultFile.length(), d.targetLabel, d.fitsTarget))
+                }
+                CompressionRepository.state.value = CompressionState.BatchDone(items, intent.getStringExtra(EXTRA_LABEL).orEmpty())
             }
             "failed" -> {
                 unbind()

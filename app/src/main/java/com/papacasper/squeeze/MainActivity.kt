@@ -62,12 +62,13 @@ private val DarkScheme = darkColorScheme(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val sharedUri = extractSharedUri(intent)
-        val sharedUrl = if (sharedUri == null) extractSharedUrl(intent) else null
+        val sharedUris = extractSharedUris(intent)
+        val sharedUri = if (sharedUris.isEmpty()) extractSharedUri(intent) else null
+        val sharedUrl = if (sharedUri == null && sharedUris.isEmpty()) extractSharedUrl(intent) else null
         setContent {
             SqueezeTheme {
                 Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
-                    CompressorScreen(initialUri = sharedUri, initialUrl = sharedUrl)
+                    CompressorScreen(initialUri = sharedUri, initialUris = sharedUris, initialUrl = sharedUrl)
                 }
             }
         }
@@ -76,6 +77,17 @@ class MainActivity : ComponentActivity() {
     private fun extractSharedUrl(intent: Intent?): String? {
         if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return null
         return SharedText.firstUrl(intent.getStringExtra(Intent.EXTRA_TEXT))
+    }
+
+    private fun extractSharedUris(intent: Intent?): List<Uri> {
+        if (intent?.action != Intent.ACTION_SEND_MULTIPLE) return emptyList()
+        val list = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+        }
+        return list.orEmpty()
     }
 
     private fun extractSharedUri(intent: Intent?): Uri? {

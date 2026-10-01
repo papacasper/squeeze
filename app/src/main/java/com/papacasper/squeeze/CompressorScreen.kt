@@ -49,7 +49,7 @@ private const val SKIP_COMPRESSION_THRESHOLD_BYTES = 20L * 1024 * 1024
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
+fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList(), initialUrl: String? = null) {
     val context = LocalContext.current
     val vm: CompressorViewModel = viewModel()
     val state = vm.state
@@ -69,10 +69,17 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
     ) { }
 
     LaunchedEffect(initialUri) { vm.onInitialUri(initialUri) }
+    LaunchedEffect(initialUris) { vm.onInitialUris(initialUris) }
     LaunchedEffect(initialUrl) { vm.onInitialUrl(initialUrl) }
 
-    val pickLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) vm.selectFile(uri)
+    val pickLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        vm.selectFiles(uris)
+    }
+
+    fun notifyPermission() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     fun runCompression(file: UiState.FileSelected, targetBytes: Long, targetLabel: String) {
@@ -273,6 +280,74 @@ fun CompressorScreen(initialUri: Uri? = null, initialUrl: String? = null) {
                             runCompression(s, bytes, label)
                         }
                     )
+                }
+
+                is UiState.BatchSelected -> {
+                    BatchFilesCard(s.files, s.skipped)
+                    Text(
+                        "Every file is squeezed on its own to fit under the size you pick.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (s.files.any { it.mime.startsWith("video") }) {
+                        FloorsCard(vm.floors) { vm.updateFloors(it) }
+                    }
+                    PresetButtons(enabled = true, last = vm.lastPreset) { preset ->
+                        vm.rememberTarget(preset)
+                        if (vm.startBatch(s.files, preset.bytes, "${preset.label} (${preset.short})")) notifyPermission()
+                        else toast("A compression is already running")
+                    }
+                    CustomSizeSlider(
+                        fraction = vm.customSliderFraction,
+                        onFractionChange = { vm.customSliderFraction = it },
+                        enabled = true,
+                        onCompress = { bytes, label ->
+                            vm.rememberTarget(null)
+                            if (vm.startBatch(s.files, bytes, label)) notifyPermission()
+                            else toast("A compression is already running")
+                        }
+                    )
+                }
+
+                is UiState.BatchDone -> {
+                    BatchResultCard(s.items, s.targetLabel)
+                    val ready = s.items.mapNotNull { item -> item.done?.let { item to it } }
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                saveOrToast {
+                                    ready.forEach { (_, d) -> SaveUtils.saveToDownloads(context, d.resultFile, d.suggestedName, d.mime) }
+                                    toast("Saved ${ready.size} files to Downloads/Squeeze")
+                                }
+                            },
+                            enabled = ready.isNotEmpty(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("  Save all")
+                        }
+                        Button(
+                            onClick = {
+                                saveOrToast {
+                                    val uris = ready.map { (_, d) -> SaveUtils.saveToDownloads(context, d.resultFile, d.suggestedName, d.mime) }
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(
+                                            SaveUtils.shareMultipleIntent(uris, BatchResult.shareMime(s.items)),
+                                            "Share compressed files"
+                                        )
+                                    )
+                                }
+                            },
+                            enabled = ready.isNotEmpty(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text("  Share all")
+                        }
+                    }
+                    OutlinedButton(onClick = { vm.reset() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Compress more files")
+                    }
                 }
 
                 is UiState.Working -> {
