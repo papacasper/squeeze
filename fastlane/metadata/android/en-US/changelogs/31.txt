@@ -1,0 +1,3 @@
+Batch compression: pick or share several files and squeeze them all to one size, with per-file results and Save/Share all.
+TikTok photo posts download as a slideshow video with their sound.
+A live estimate under each size target, and the last target is remembered.
