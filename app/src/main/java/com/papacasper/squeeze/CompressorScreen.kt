@@ -388,7 +388,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                     }
                     InfoCard(label = "Original file", size = s.originalBytes)
                     if (s.settings.isNotEmpty()) {
-                        Text("Made with: ${s.settings}", style = MaterialTheme.typography.bodyMedium)
+                        Text(if (KeepOriginal.isKept(s.settings)) s.settings else "Made with: ${s.settings}", style = MaterialTheme.typography.bodyMedium)
                     }
                     if (allFiles.size > 1) {
                         Text("Split into ${allFiles.size} parts, each under ${s.targetLabel}", style = MaterialTheme.typography.bodyMedium)

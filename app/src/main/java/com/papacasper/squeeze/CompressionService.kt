@@ -303,6 +303,30 @@ class CompressionService : Service() {
         }
 
         val displayName = queryDisplayName(contentResolver, uri)
+        val comparable = !trimmed && !videoToGif && partFiles.size == 1
+        if (KeepOriginal.shouldKeep(spec.originalBytes, outFile.length(), targetBytes, comparable)) {
+            val keptName = displayName?.takeIf { it.isNotBlank() } ?: "original"
+            val kept = File(outDir, "original-" + keptName.replace('/', '_'))
+            val copied = withContext(Dispatchers.IO) {
+                runCatching {
+                    contentResolver.openInputStream(uri)?.use { input -> kept.outputStream().use { input.copyTo(it) } }
+                    kept.length() == spec.originalBytes
+                }.getOrDefault(false)
+            }
+            if (copied) {
+                outFile.delete()
+                return CompressionState.Done(
+                    originalBytes = spec.originalBytes,
+                    resultFile = kept,
+                    mime = mime,
+                    fitsTarget = true,
+                    targetLabel = spec.targetLabel,
+                    suggestedName = keptName,
+                    settings = KeepOriginal.NOTE
+                ) to (displayName ?: kept.name)
+            }
+            kept.delete()
+        }
         val done = CompressionState.Done(
             originalBytes = spec.originalBytes,
             resultFile = resultFile,

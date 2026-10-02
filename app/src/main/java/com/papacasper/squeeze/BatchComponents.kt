@@ -86,6 +86,7 @@ internal fun BatchResultCard(items: List<BatchItem>, targetLabel: String) {
                         Text(
                             when {
                                 d == null -> item.error ?: "Failed"
+                                KeepOriginal.isKept(d.settings) -> "${formatSize(item.originalBytes)} · kept the original (already small)"
                                 !d.fitsTarget -> "${formatSize(item.originalBytes)} → ${formatSize(d.resultFile.length())} (still over)"
                                 else -> "${formatSize(item.originalBytes)} → ${formatSize(d.resultFile.length())}"
                             },
