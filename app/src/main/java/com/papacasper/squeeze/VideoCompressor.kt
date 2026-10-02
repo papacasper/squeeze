@@ -46,6 +46,9 @@ object VideoCompressor {
 
     private class StallException : Exception("Encoder stalled")
 
+    /** The pass was stopped early because it was heading well over the goal; [projectedBytes] is where it was heading. */
+    private class OverBudgetException(val projectedBytes: Long) : Exception("Pass projected over budget")
+
     // Many hardware encoders clamp bitrate to a device/resolution-specific floor and silently
     // ignore a lower request, so a starved budget also steps resolution down (never below 720p).
 
@@ -171,10 +174,14 @@ object VideoCompressor {
             )
             val passFile = File(outputFile.parentFile, "pass${attempt}_${outputFile.name}")
             val passStart = SystemClock.elapsedRealtime()
+            // A pass that can still be followed by a lower one may be stopped early; the last one, or one already at
+            // the lowest bitrate, always runs to the end so there is a result to return.
+            val abortOverGoal = if (attempt < maxAttempts && bitrate > BitrateMath.MIN_BITRATE) goalBytes else null
+            var abortedProjection: Long? = null
             try {
                 suspend fun encode(mime: String) {
                     val label = if (mime == "video/avc") ", H.264" else ""
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, mime, trimStartMs, trimDurationMs) { intraFraction ->
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, mime, trimStartMs, trimDurationMs, abortOverGoal) { intraFraction ->
                         onProgress(
                             "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${floors.minFps.toInt()} fps" else ""}$audioLabel$label)...",
                             passBase + intraFraction / maxAttempts
@@ -182,7 +189,11 @@ object VideoCompressor {
                     }
                 }
                 try {
-                    encode(videoMime)
+                    try {
+                        encode(videoMime)
+                    } catch (e: OverBudgetException) {
+                        abortedProjection = e.projectedBytes
+                    }
                 } catch (e: StallException) {
                     if (videoMime == "video/avc") throw IllegalStateException(stallMessage)
                     // HEVC hardware encoder deadlocked: use AVC for this pass and every later one.
@@ -203,6 +214,19 @@ object VideoCompressor {
                 passFile.delete()
                 if (bestFile != null) break
                 throw e
+            }
+            val aborted = abortedProjection
+            if (aborted != null) {
+                passFile.delete()
+                Log.i(
+                    TIMING_TAG,
+                    "pass $attempt stopped after ${SystemClock.elapsedRealtime() - passStart} ms: heading for $aborted bytes (goal $goalBytes) at ${bitrate / 1000} kbps"
+                )
+                if (attempt > 1 && BitrateMath.shrinkStalled(aborted, previousPassBytes) && ladderIndex < HEIGHT_LADDER.lastIndex) ladderIndex++
+                previousPassBytes = aborted
+                if (ladderIndex == HEIGHT_LADDER.lastIndex) capFps = true
+                bitrate = BitrateMath.nextVideoBitrate(bitrate, aborted, goalBytes, audioBytes)
+                continue
             }
             val passBytes = passFile.length()
             Log.i(
@@ -273,6 +297,7 @@ object VideoCompressor {
         videoMimeType: String,
         trimStartMs: Long,
         trimDurationMs: Long,
+        abortOverGoal: Long? = null,
         onPassProgress: (Float) -> Unit
     ) {
         if (outFile.exists()) outFile.delete()
@@ -357,6 +382,14 @@ object VideoCompressor {
                         transformer.cancel()
                         if (cont.isActive) cont.resume(Result.failure(StallException()))
                         return@launch
+                    }
+                    if (abortOverGoal != null && progressState == Transformer.PROGRESS_STATE_AVAILABLE) {
+                        val projected = PassProjection.abortWith(outFile.length(), progressHolder.progress / 100f, abortOverGoal)
+                        if (projected != null) {
+                            transformer.cancel()
+                            if (cont.isActive) cont.resume(Result.failure(OverBudgetException(projected)))
+                            return@launch
+                        }
                     }
                     delay(POLL_MS)
                 }
