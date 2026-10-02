@@ -11,6 +11,10 @@ class SqueezeApplication : Application() {
         super.onCreate()
         // The compression service runs in ":compress"; only the UI process owns the UI-side state.
         if (!CompressionBridge.isMainProcess(this)) return
+        // Before install(): that hands a waiting result to the UI and deletes its pending marker, which this checks.
+        OrphanCleanup.sweep(cacheDir, filesDir, CompressionBridge.isJobProcessAlive(this)).takeIf { it > 0 }?.let {
+            Log.i("SqueezeCleanup", "Removed $it bytes of leftover compression files")
+        }
         CompressionBridge.install(this)
         ExitDiagnostics.takeInterruptedJobMessage(this)?.let {
             CompressionRepository.state.value = CompressionState.Failed(it)

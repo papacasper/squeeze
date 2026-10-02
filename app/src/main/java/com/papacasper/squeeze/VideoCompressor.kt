@@ -23,6 +23,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import android.util.Log
+import android.os.SystemClock
 import java.io.File
 import kotlin.coroutines.resume
 
@@ -35,8 +37,12 @@ object VideoCompressor {
 
     // Some devices' hardware HEVC encoders deadlock partway through a transform and never
     // call onCompleted/onError. If getProgress() reports the same value for this long, treat
-    // it as stalled, cancel, and retry the pass with AVC (H.264) instead.
-    private const val STALL_TIMEOUT_MS = 20_000L
+    // it as stalled, cancel, and retry the pass with AVC (H.264) instead (see StallWatchdog).
+
+    private const val POLL_MS = 300L
+
+    // logcat tag for per-pass timing: adb logcat -s SqueezeTiming
+    private const val TIMING_TAG = "SqueezeTiming"
 
     private class StallException : Exception("Encoder stalled")
 
@@ -94,25 +100,52 @@ object VideoCompressor {
         // Still starved at the chosen rung: cap to MIN_FPS (a no-op for sources already at or below it).
         var capFps = BitrateMath.starvedAt(bitrate, sourcePixels, originalHeight, HEIGHT_LADDER[ladderIndex])
 
+        // The first codec to stall is dropped for the rest of the job, so later passes don't each re-pay the stall timeout.
+        var videoMime = "video/hevc"
+        val stallMessage = "The video encoder stopped responding, with both H.265 and H.264. " +
+            "Try a shorter or lower-resolution video, or compress it on a PC with squeeze-cli."
+
         // A pass over a long clip costs minutes: encode a few seconds first and start from the
-        // bitrate that sample says will land on the target.
+        // bitrate that sample says will land on the target. What the sample measured is remembered per source
+        // so repeating the job skips it.
         if (durationSec >= BitrateMath.CALIBRATE_MIN_SEC) {
             val sampleSec = BitrateMath.CALIBRATE_SAMPLE_SEC
+            val sampleHeight = HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }.coerceAtMost(originalHeight)
+            val sampleFps = if (capFps) floors.minFps else null
+            val cacheKey = CalibrationCache.Key(sourceUri.toString(), fileBytes, trimStartMs, trimDurationMs, sampleHeight, sampleFps, sampleSec)
+            val cached = CalibrationCache.get(context.cacheDir, cacheKey)
             val sampleFile = File(outputFile.parentFile, "sample_${outputFile.name}")
             try {
-                onProgress("Testing a short sample to size the encode...", 0f)
-                val sampleStart = trimStartMs + ((durationSec - sampleSec) / 2 * 1000).toLong()
-                transcode(
-                    context, sourceUri, sampleFile, bitrate,
-                    HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }.coerceAtMost(originalHeight),
-                    originalHeight, if (capFps) floors.minFps else null, audioBitrate, "video/hevc",
-                    sampleStart, (sampleSec * 1000).toLong()
-                ) { }
-                val sampleBytes = sampleFile.length()
+                val sampleBytes: Long
+                val sampleBitrate: Long
+                val sampleAudio: Long
+                if (cached != null) {
+                    onProgress("Reusing the earlier sample for this file.", 0f)
+                    Log.i(TIMING_TAG, "sample cached (${cached.sampleBytes} bytes at ${cached.bitrate / 1000} kbps)")
+                    sampleBytes = cached.sampleBytes; sampleBitrate = cached.bitrate; sampleAudio = cached.audioBitrate
+                } else {
+                    onProgress("Testing a short sample to size the encode...", 0f)
+                    val sampleStart = trimStartMs + ((durationSec - sampleSec) / 2 * 1000).toLong()
+                    val t0 = SystemClock.elapsedRealtime()
+                    try {
+                        transcode(
+                            context, sourceUri, sampleFile, bitrate, sampleHeight, originalHeight, sampleFps, audioBitrate, videoMime,
+                            sampleStart, (sampleSec * 1000).toLong()
+                        ) { }
+                    } catch (e: StallException) {
+                        videoMime = "video/avc"
+                        Log.w(TIMING_TAG, "sample stalled on HEVC, using H.264 from here")
+                        throw e
+                    }
+                    sampleBytes = sampleFile.length()
+                    sampleBitrate = bitrate
+                    sampleAudio = audioBitrate ?: sourceAudioBitrate
+                    Log.i(TIMING_TAG, "sample ${SystemClock.elapsedRealtime() - t0} ms -> $sampleBytes bytes at ${bitrate / 1000} kbps, ${sampleHeight}p")
+                    if (sampleBytes > 0) CalibrationCache.put(context.cacheDir, cacheKey, CalibrationCache.Entry(sampleBitrate, sampleBytes, sampleAudio))
+                }
                 if (sampleBytes > 0) {
-                    val audioBps = audioBitrate ?: sourceAudioBitrate
-                    val predicted = BitrateMath.predictedBytes(sampleBytes, sampleSec, audioBps, durationSec)
-                    bitrate = BitrateMath.calibratedBitrate(bitrate, sampleBytes, sampleSec, audioBps, durationSec, targetBytes)
+                    val predicted = BitrateMath.predictedBytes(sampleBytes, sampleSec, sampleAudio, durationSec)
+                    bitrate = BitrateMath.calibratedBitrate(sampleBitrate, sampleBytes, sampleSec, sampleAudio, durationSec, targetBytes)
                     onProgress("Sample predicts about ${predicted / 1_000_000} MB; starting at ${bitrate / 1000} kbps.", 0f)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -137,25 +170,29 @@ object VideoCompressor {
                 passBase
             )
             val passFile = File(outputFile.parentFile, "pass${attempt}_${outputFile.name}")
+            val passStart = SystemClock.elapsedRealtime()
             try {
-                try {
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, "video/hevc", trimStartMs, trimDurationMs) { intraFraction ->
+                suspend fun encode(mime: String) {
+                    val label = if (mime == "video/avc") ", H.264" else ""
+                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, mime, trimStartMs, trimDurationMs) { intraFraction ->
                         onProgress(
-                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${floors.minFps.toInt()} fps" else ""}$audioLabel)...",
+                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p${if (capFps) ", ${floors.minFps.toInt()} fps" else ""}$audioLabel$label)...",
                             passBase + intraFraction / maxAttempts
                         )
                     }
+                }
+                try {
+                    encode(videoMime)
                 } catch (e: StallException) {
-                    // HEVC hardware encoder deadlocked — fall back to AVC for this pass.
-                    onProgress(
-                        "Encoder stalled, retrying pass $attempt with H.264...",
-                        passBase
-                    )
-                    transcode(context, sourceUri, passFile, bitrate, targetHeight, originalHeight, if (capFps) floors.minFps else null, audioBitrate, "video/avc", trimStartMs, trimDurationMs) { intraFraction ->
-                        onProgress(
-                            "Encoding pass $attempt of $maxAttempts (target ${bitrate / 1000} kbps, ${targetHeight}p, H.264)...",
-                            passBase + intraFraction / maxAttempts
-                        )
+                    if (videoMime == "video/avc") throw IllegalStateException(stallMessage)
+                    // HEVC hardware encoder deadlocked: use AVC for this pass and every later one.
+                    Log.w(TIMING_TAG, "pass $attempt stalled on HEVC after ${SystemClock.elapsedRealtime() - passStart} ms, switching to H.264")
+                    videoMime = "video/avc"
+                    onProgress("Encoder stalled, retrying pass $attempt with H.264...", passBase)
+                    try {
+                        encode(videoMime)
+                    } catch (e2: StallException) {
+                        throw IllegalStateException(stallMessage)
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -168,6 +205,11 @@ object VideoCompressor {
                 throw e
             }
             val passBytes = passFile.length()
+            Log.i(
+                TIMING_TAG,
+                "pass $attempt ${SystemClock.elapsedRealtime() - passStart} ms ${if (videoMime == "video/avc") "avc" else "hevc"} " +
+                    "${targetHeight}p ${if (cappedThisPass) "${floors.minFps.toInt()}fps" else "srcfps"} ${bitrate / 1000} kbps -> $passBytes bytes (goal $goalBytes)"
+            )
 
             if (passBytes in 1 until bestBytes) {
                 bestFile?.delete()
@@ -298,25 +340,25 @@ object VideoCompressor {
 
             val progressHolder = ProgressHolder()
             pollJob = outerScope.launch {
-                var lastProgress = -1
-                var stalledForMs = 0L
+                val watchdog = StallWatchdog()
                 while (isActive) {
                     val progressState = transformer.getProgress(progressHolder)
-                    if (progressState == Transformer.PROGRESS_STATE_AVAILABLE) {
-                        onPassProgress(progressHolder.progress / 100f)
-                        if (progressHolder.progress == lastProgress) {
-                            stalledForMs += 300
-                            if (stalledForMs >= STALL_TIMEOUT_MS) {
-                                transformer.cancel()
-                                if (cont.isActive) cont.resume(Result.failure(StallException()))
-                                return@launch
-                            }
-                        } else {
-                            lastProgress = progressHolder.progress
-                            stalledForMs = 0L
+                    val stalled = when (progressState) {
+                        Transformer.PROGRESS_STATE_AVAILABLE -> {
+                            onPassProgress(progressHolder.progress / 100f)
+                            watchdog.tick(progressHolder.progress, POLL_MS)
                         }
+                        // Started but no first progress yet: counts against the (longer) start timeout.
+                        Transformer.PROGRESS_STATE_WAITING_FOR_AVAILABILITY -> watchdog.tick(null, POLL_MS)
+                        // UNAVAILABLE (unknown duration) never reports progress, so there is nothing to judge by.
+                        else -> false
                     }
-                    delay(300)
+                    if (stalled) {
+                        transformer.cancel()
+                        if (cont.isActive) cont.resume(Result.failure(StallException()))
+                        return@launch
+                    }
+                    delay(POLL_MS)
                 }
             }
 
