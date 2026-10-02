@@ -109,7 +109,7 @@ object CompressionBridge {
             if (CompressionRepository.state.value is CompressionState.Working) {
                 val message = ExitDiagnostics.takeInterruptedJobMessage(app, jobProcessAlive = false)
                     ?: ExitMessages.describe(-1, "your file")
-                CompressionRepository.state.value = CompressionState.Failed(message)
+                if (!recoverInterruptedBatch()) CompressionRepository.state.value = CompressionState.Failed(message)
             }
         }
     }
@@ -163,13 +163,7 @@ object CompressionBridge {
             "batch_done" -> {
                 unbind()
                 pendingFile(app).delete()
-                val items = BatchResult.fromJson(intent.getStringExtra(EXTRA_BATCH).orEmpty())
-                val now = System.currentTimeMillis()
-                items.forEach { item ->
-                    val d = item.done ?: return@forEach
-                    HistoryStore.addEntry(app, HistoryEntry(now, item.sourceName, item.originalBytes, d.resultFile.length(), d.targetLabel, d.fitsTarget))
-                }
-                CompressionRepository.state.value = CompressionState.BatchDone(items, intent.getStringExtra(EXTRA_LABEL).orEmpty())
+                showBatch(BatchResult.fromJson(intent.getStringExtra(EXTRA_BATCH).orEmpty()), intent.getStringExtra(EXTRA_LABEL).orEmpty())
             }
             "failed" -> {
                 unbind()
@@ -181,6 +175,26 @@ object CompressionBridge {
                 CompressionRepository.state.value = CompressionState.Idle
             }
         }
+    }
+
+    private fun showBatch(items: List<BatchItem>, label: String) {
+        val now = System.currentTimeMillis()
+        items.forEach { item ->
+            val d = item.done ?: return@forEach
+            HistoryStore.addEntry(app, HistoryEntry(now, item.sourceName, item.originalBytes, d.resultFile.length(), d.targetLabel, d.fitsTarget))
+        }
+        CompressionRepository.state.value = CompressionState.BatchDone(items, label)
+    }
+
+    /**
+     * The job process died partway through a batch: show the files it had already finished (the rest marked as not
+     * finished) instead of a bare failure. False when there was no batch or nothing finished, so the caller reports the death.
+     */
+    fun recoverInterruptedBatch(): Boolean {
+        val (label, items) = BatchProgress.read(app.filesDir) ?: run { BatchProgress.clear(app.filesDir); return false }
+        BatchProgress.clear(app.filesDir)
+        showBatch(items, label)
+        return true
     }
 
     private fun bind() {

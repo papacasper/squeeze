@@ -9,11 +9,11 @@ import java.io.File
  */
 object OrphanCleanup {
     /**
-     * Deletes the job's working folder unless a job is still running or a finished result is still waiting
-     * to be picked up (its file lives in that folder). Returns the bytes freed.
+     * Deletes the job's working folder unless a job is still running or a finished result (or a killed batch's finished files)
+     * is still waiting to be picked up; those files live in that folder. Returns the bytes freed.
      */
     fun sweep(cacheDir: File, filesDir: File, jobAlive: Boolean): Long {
-        if (jobAlive || File(filesDir, "pending_result.json").exists()) return 0L
+        if (jobAlive || File(filesDir, "pending_result.json").exists() || File(filesDir, BatchProgress.FILE_NAME).exists()) return 0L
         val work = File(cacheDir, "compressed")
         if (!work.exists()) return 0L
         val bytes = work.walkTopDown().filter { it.isFile }.sumOf { it.length() }

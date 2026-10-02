@@ -17,7 +17,7 @@ class SqueezeApplication : Application() {
         }
         CompressionBridge.install(this)
         ExitDiagnostics.takeInterruptedJobMessage(this)?.let {
-            CompressionRepository.state.value = CompressionState.Failed(it)
+            if (!CompressionBridge.recoverInterruptedBatch()) CompressionRepository.state.value = CompressionState.Failed(it)
         }
         try {
             YoutubeDL.getInstance().init(this)

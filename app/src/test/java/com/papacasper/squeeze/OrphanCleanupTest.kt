@@ -48,3 +48,17 @@ class OrphanCleanupTest {
         assertEquals(0L, OrphanCleanup.sweep(tmp.newFolder(), tmp.newFolder(), jobAlive = false))
     }
 }
+
+class OrphanCleanupBatchTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    @Test
+    fun keepsFilesWhileAKilledBatchHasFinishedResultsToShow() {
+        val cache = tmp.newFolder(); val files = tmp.newFolder()
+        File(files, BatchProgress.FILE_NAME).writeText("{}")
+        val work = File(cache, "compressed/item0").apply { mkdirs() }
+        File(work, "compressed.mp4").writeBytes(ByteArray(10))
+        assertEquals(0L, OrphanCleanup.sweep(cache, files, jobAlive = false))
+        assertTrue(work.exists())
+    }
+}

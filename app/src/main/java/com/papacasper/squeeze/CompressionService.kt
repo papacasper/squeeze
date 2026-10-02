@@ -163,8 +163,10 @@ class CompressionService : Service() {
                     return@launch
                 }
 
+                val names = specs.mapIndexed { i, spec -> queryDisplayName(contentResolver, spec.uri) ?: "file ${i + 1}" }
+                BatchProgress.clear(filesDir)
                 specs.forEachIndexed { i, spec ->
-                    val name = queryDisplayName(contentResolver, spec.uri) ?: "file ${i + 1}"
+                    val name = names[i]
                     try {
                         val dir = File(root, "item$i").apply { mkdirs() }
                         val (done, sourceName) = runOne(spec, dir) { msg, fraction ->
@@ -177,6 +179,12 @@ class CompressionService : Service() {
                         results += BatchItem(name, spec.originalBytes, null, "Not enough memory to process this file.")
                     } catch (e: Exception) {
                         results += BatchItem(name, spec.originalBytes, null, e.message ?: "Unknown error during compression")
+                    }
+                    // If the process dies before the batch ends, the UI can still show what has finished.
+                    if (results.any { it.done != null }) {
+                        BatchProgress.write(filesDir, first.targetLabel, BatchProgress.withRemaining(
+                            results, (i + 1 until specs.size).map { names[it] to specs[it].originalBytes }
+                        ))
                     }
                 }
                 finishBatch(results, first.targetLabel)
@@ -192,6 +200,7 @@ class CompressionService : Service() {
                 publishState(CompressionState.Failed(e.message ?: "Unknown error during compression"))
             } finally {
                 ExitDiagnostics.jobFinished(applicationContext)
+                BatchProgress.clear(filesDir)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
