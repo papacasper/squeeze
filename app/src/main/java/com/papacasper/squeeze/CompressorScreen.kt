@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,6 +55,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
     val vm: CompressorViewModel = viewModel()
     val state = vm.state
     var showHistory by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
 
     fun toast(message: String) = android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
     fun saveOrToast(action: () -> Unit) {
@@ -92,6 +94,10 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
         }
     }
 
+    if (showAbout) {
+        AboutDialog(onDismiss = { showAbout = false })
+    }
+
     if (showHistory) {
         HistoryDialog(onDismiss = { showHistory = false })
     }
@@ -118,6 +124,9 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                     }
                     IconButton(onClick = { showHistory = true }) {
                         Icon(Icons.Filled.History, contentDescription = "History", tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                    IconButton(onClick = { showAbout = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "About and licenses", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
