@@ -1,0 +1,3 @@
+A batch that gets interrupted now keeps the files it already finished.
+New About screen with the licenses of the bundled components.
+More reliable encoding: a stalled encoder falls back to H.264, and leftover files from a killed job are cleaned up.
