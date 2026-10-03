@@ -100,7 +100,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
-    testImplementation("org.json:json:20240303")  // the android.jar org.json is a stub in unit tests
+    testImplementation("org.json:json:20260814")  // the android.jar org.json is a stub in unit tests
 
     implementation(libs.androidx.media3.transformer)
     implementation(libs.androidx.media3.common)
