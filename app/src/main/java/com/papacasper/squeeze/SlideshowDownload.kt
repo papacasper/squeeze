@@ -2,7 +2,9 @@ package com.papacasper.squeeze
 
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -40,7 +42,7 @@ object SlideshowDownload {
         try {
             val finalUrl = conn.url.toString()
             if (conn.responseCode != 200) return finalUrl to ""
-            return finalUrl to conn.inputStream.use { it.readNBytes(MAX_PAGE_BYTES).toString(Charsets.UTF_8) }
+            return finalUrl to conn.inputStream.use { it.readAtMost(MAX_PAGE_BYTES).toString(Charsets.UTF_8) }
         } finally {
             conn.disconnect()
         }
@@ -55,5 +57,17 @@ object SlideshowDownload {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** Up to [max] bytes of the stream (InputStream.readNBytes needs API 33; minSdk is 29). */
+    private fun InputStream.readAtMost(max: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        while (out.size() < max) {
+            val n = read(buf, 0, minOf(buf.size, max - out.size()))
+            if (n < 0) break
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 }

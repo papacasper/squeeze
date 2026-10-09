@@ -2,9 +2,11 @@ package com.papacasper.squeeze
 
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -20,6 +22,7 @@ import java.io.File
 import kotlin.coroutines.resume
 
 /** Builds a 1080x1920 slideshow mp4 from still images with an optional soundtrack, using Media3's Transformer. */
+@OptIn(UnstableApi::class)
 object SlideshowVideo {
     private const val WIDTH = 1080
     private const val HEIGHT = 1920
