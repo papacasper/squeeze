@@ -5,6 +5,7 @@ Proves a build works on a real phone, end to end: pick a video, compress to a pr
 1. `./gradlew testDebugUnitTest assembleRelease` (release keeps the phone's signature, so it updates in place; needs `local.properties` signing keys).
 2. `adb install -r app/build/outputs/apk/release/app-release.apk`
 3. `scripts/device-smoke.sh <video display name> "<preset label>"`
+   - URL download: `scripts/device-smoke.sh <https url> "<preset>"` shares the link in, presses Download, then compresses (`--download-only` instead of a preset stops after the download). Known good: `https://www.youtube.com/watch?v=jNQXAC9IVRw`.
 
 Success = exit 0 and `smoke: PASS` (result screen says "Fits under ..."). Anything else fails; exit 2 means the UI couldn't be driven (wrong screen, file not found).
 
