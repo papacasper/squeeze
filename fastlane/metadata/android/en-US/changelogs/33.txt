@@ -1,0 +1,4 @@
+Files that are already small enough are kept as they are instead of being re-encoded bigger.
+Long videos finish faster: an encode pass that is clearly heading over the size stops early and retries lower.
+Fixed TikTok photo slideshow downloads crashing on Android 10 to 12.
+Sharing a mix of photos and videos from the gallery now offers Squeeze.
