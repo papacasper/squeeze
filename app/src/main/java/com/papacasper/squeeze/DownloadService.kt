@@ -101,13 +101,16 @@ class DownloadService : Service() {
                         runDownload()
                     } catch (e: YoutubeDLException) {
                         // Sites change constantly and a stale yt-dlp is the usual reason a working URL
-                        // suddenly fails: update once and retry. A user cancel kills the process, which
-                        // also lands here, so bail out first if the job is no longer active.
+                        // suddenly fails, so try an update, then retry once either way: YouTube also
+                        // hands out stream URLs that 403 at random, and a fresh attempt gets new ones.
+                        // A user cancel kills the process, which also lands here, so bail out first if
+                        // the job is no longer active.
                         currentCoroutineContext().ensureActive()
                         onProgress("Download failed; updating yt-dlp and retrying...", 0f)
-                        val status = YoutubeDL.getInstance()
-                            .updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel._STABLE)
-                        if (status != YoutubeDL.UpdateStatus.DONE) throw e  // already current: the failure is real
+                        runCatching {
+                            YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel._STABLE)
+                        }
+                        currentCoroutineContext().ensureActive()
                         outDir.listFiles()?.forEach { it.deleteRecursively() }
                         runDownload()
                     }
