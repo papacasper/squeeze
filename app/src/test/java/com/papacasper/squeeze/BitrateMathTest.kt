@@ -308,4 +308,57 @@ class BitrateMathTest {
         assertEquals("720p · 24 fps · audio 64 kbps · video ~387 kbps", text)
         assertEquals("1080p · original frame rate · video ~5000 kbps", BitrateMath.describe(BitrateMath.Estimate(1080, false, 5_000_000, null), f))
     }
+
+    // Real run, SM-S948U, 597 s clip at Discord Free (goal 20 MiB): pass 1 at 100 kbps video + 90 kbps audio came out
+    // 25_288_353 bytes. The old loop stepped audio one notch per pass and reset video to 194 kbps, running out of passes.
+    private val goal = 20L * 1024 * 1024
+    private val dur = 597.0
+
+    @Test
+    fun audioStep_jumpsStraightToTheStepPredictedToFit() {
+        val step = BitrateMath.audioStepAfterOverPass(90_000L, 128_000L, 25_288_353L, 90_000 * dur / 8, goal, dur)
+        assertEquals(32_000L, step)
+    }
+
+    @Test
+    fun audioStep_takesTheHighestStepThatFits() {
+        // Video took 15 MB: 64 kbps audio (4.8 MB) fits under 20 MiB, so don't go lower.
+        val step = BitrateMath.audioStepAfterOverPass(null, 128_000L, 15_000_000L + 9_552_000L, 9_552_000.0, goal, dur)
+        assertEquals(64_000L, step)
+    }
+
+    @Test
+    fun audioStep_fallsToLowestWhenNothingFits_andNullAtTheBottom() {
+        assertEquals(32_000L, BitrateMath.audioStepAfterOverPass(64_000L, 128_000L, 60_000_000L, 4_776_000.0, goal, dur))
+        assertNull(BitrateMath.audioStepAfterOverPass(32_000L, 128_000L, 60_000_000L, 2_388_000.0, goal, dur))
+        assertNull(BitrateMath.audioStepAfterOverPass(null, 0L, 60_000_000L, 0.0, goal, dur))
+        // A user floor of 48 kbps stops the jump there.
+        val f = BitrateMath.Floors(minAudioBitrate = 48_000L)
+        assertEquals(48_000L, BitrateMath.audioStepAfterOverPass(90_000L, 128_000L, 60_000_000L, 6_716_250.0, goal, dur, f))
+    }
+
+    @Test
+    fun videoAfterAudioStep_staysAtTheFloorInsteadOfResettingUp() {
+        val old = 90_000 * dur / 8
+        val new = 32_000 * dur / 8
+        assertEquals(BitrateMath.MIN_BITRATE, BitrateMath.videoBitrateAfterAudioStep(100_000L, 25_288_353L, old, new, goal))
+    }
+
+    @Test
+    fun videoAfterAudioStep_usesRealRoomWhenTheAudioFreedALot() {
+        // Video took 5 MB at 300 kbps beside 10 MB of audio; with 2 MB of audio there is room to raise it, but bounded by what it measured.
+        val next = BitrateMath.videoBitrateAfterAudioStep(300_000L, 15_000_000L, 10_000_000.0, 2_000_000.0, goal)
+        assertTrue(next > 300_000L)
+        assertTrue(next < 300_000L * 4)
+    }
+
+    @Test
+    fun assess_usesTheEncodersRealFloor() {
+        // At MIN_BITRATE the 597 s clip looks reachable; at the 248 kbps this phone really writes at 720p it isn't.
+        val ok = BitrateMath.assess(goal, dur, 128_000L, 1280L * 720, 720, 78_000_000L)
+        assertTrue(ok.level != BitrateMath.Feasibility.UNREACHABLE)
+        val real = BitrateMath.assess(goal, dur, 128_000L, 1280L * 720, 720, 78_000_000L, minVideoBps = 248_000L)
+        assertEquals(BitrateMath.Feasibility.UNREACHABLE, real.level)
+        assertTrue(real.minBytes > goal * 0.92)
+    }
 }

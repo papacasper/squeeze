@@ -78,7 +78,33 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         if (!splitLongVideos || convertToGif) return 1
         val ms = (trimEndMs - trimStartMs).takeIf { it > 0 } ?: videoDurationMs
         if (ms <= 0) return 1
-        return BitrateMath.partsNeeded(targetBytes, ms / 1000.0, probe.audioBitrate, probe.pixels, probe.height, originalBytes, floors)
+        return BitrateMath.partsNeeded(targetBytes, ms / 1000.0, probe.audioBitrate, probe.pixels, probe.height, originalBytes, floors, minVideoBps())
+    }
+
+    /** What this phone's encoder really writes at low bitrates (see [EncoderFloorStore]); refreshed per selected video. */
+    private var encoderFloors by mutableStateOf<Map<Int, Long>>(emptyMap())
+
+    /** Lowest video bitrate the encoder really writes at the lowest height this source may be encoded to. */
+    fun minVideoBps(): Long {
+        val height = sourceProbe?.height ?: return BitrateMath.MIN_BITRATE
+        return EncoderFloorStore.floorAt(encoderFloors, floors.minHeight.coerceAtMost(height))
+    }
+
+    /** Pre-encode verdict for the selected video at [targetBytes]; null for images, GIF mode, or before the probe. */
+    fun assessTarget(targetBytes: Long, originalBytes: Long): BitrateMath.Assessment? {
+        val probe = sourceProbe ?: return null
+        if (convertToGif) return null
+        val ms = (trimEndMs - trimStartMs).takeIf { it > 0 } ?: videoDurationMs
+        if (ms <= 0) return null
+        return BitrateMath.assess(targetBytes, ms / 1000.0, probe.audioBitrate, probe.pixels, probe.height, originalBytes, floors, minVideoBps())
+    }
+
+    /** Parts that would let [targetBytes] fit, whether or not splitting is switched on (1 = splitting can't help). */
+    fun partsToFit(targetBytes: Long, originalBytes: Long): Int {
+        val probe = sourceProbe ?: return 1
+        val ms = (trimEndMs - trimStartMs).takeIf { it > 0 } ?: videoDurationMs
+        if (ms <= 0 || convertToGif) return 1
+        return BitrateMath.partsNeeded(targetBytes, ms / 1000.0, probe.audioBitrate, probe.pixels, probe.height, originalBytes, floors, minVideoBps())
     }
 
     fun rememberTarget(preset: Preset?) {
@@ -153,7 +179,26 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         if (url == null || url == handledInitialUrl) return
         handledInitialUrl = url
         downloadUrl = url
+        if (autoCompress) startDownload()
     }
+
+    /**
+     * Set when the app was opened through the "Squeeze to last size" share target: the next selected file (or
+     * batch, or downloaded link) is compressed to [lastPreset] without another tap. Cleared once it fires.
+     */
+    var autoCompress by mutableStateOf(false)
+
+    /** A newer release's version, shown as a banner on the start screen; see [UpdateCheck]. */
+    var updateAvailable by mutableStateOf<String?>(null)
+        private set
+
+    init {
+        viewModelScope.launch { updateAvailable = withContext(Dispatchers.IO) { UpdateCheck.availableUpdate(getApplication()) } }
+    }
+
+    /** True once the selected file's probe has finished (or wasn't needed), so a pre-encode check can run. */
+    var probed by mutableStateOf(false)
+        private set
 
     /** Handles the Uri the app was launched/shared with, once. */
     fun onInitialUri(uri: Uri?) {
@@ -284,7 +329,8 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         )
         CompressionService.startBatch(
             getApplication(), files.map { it.uri }, files.map { it.mime }, files.map { it.bytes },
-            targetBytes, targetLabel, floors
+            targetBytes, targetLabel, floors,
+            toGif = convertToGif, split = splitLongVideos && !convertToGif
         )
         return true
     }
@@ -296,6 +342,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
         sourceProbe = null
         trimStartMs = 0L
         trimEndMs = 0L
+        probed = !mime.startsWith("video")
         state = UiState.FileSelected(uri, mime, size, thumbnail = null)
         viewModelScope.launch {
             val thumb = withContext(Dispatchers.IO) { decodeThumbnail(context.contentResolver, uri, mime) }
@@ -309,7 +356,9 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
                 val duration = withContext(Dispatchers.IO) { queryVideoDurationMs(context, uri) }
                 videoDurationMs = duration
                 trimEndMs = duration
+                encoderFloors = withContext(Dispatchers.IO) { EncoderFloorStore.load(context.filesDir) }
                 sourceProbe = withContext(Dispatchers.IO) { VideoCompressor.probe(context, uri) }
+                probed = true
             }
         }
     }
@@ -357,7 +406,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
     }
 
     fun startDownload() {
-        DownloadService.start(getApplication(), downloadUrl.trim())
+        DownloadService.start(getApplication(), downloadUrl.trim(), lastPreset?.bytes, floors.minHeight)
         downloadUrl = ""
     }
 

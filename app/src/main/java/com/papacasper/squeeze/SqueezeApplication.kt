@@ -22,6 +22,7 @@ class SqueezeApplication : Application() {
         try {
             YoutubeDL.getInstance().init(this)
             FFmpeg.getInstance().init(this)
+            YtDlpUpdater.updateIfDue(this)
         } catch (e: YoutubeDLException) {
             Log.e("SqueezeApplication", "Failed to initialize yt-dlp/ffmpeg", e)
         }

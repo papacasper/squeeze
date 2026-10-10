@@ -1,5 +1,6 @@
 package com.papacasper.squeeze
 
+import android.util.Log
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -88,7 +89,14 @@ class CompressionService : Service() {
             val mimes = intent.getStringArrayExtra(EXTRA_BATCH_MIMES) ?: return START_NOT_STICKY
             val sizes = intent.getLongArrayExtra(EXTRA_BATCH_SIZES) ?: return START_NOT_STICKY
             if (batchUris.isEmpty() || mimes.size != batchUris.size || sizes.size != batchUris.size) return START_NOT_STICKY
-            val specs = batchUris.indices.map { Spec(batchUris[it], mimes[it], sizes[it], targetBytes, targetLabel, floors = floors) }
+            val toGif = intent.getBooleanExtra(EXTRA_TO_GIF, false)
+            val split = intent.getBooleanExtra(EXTRA_SPLIT, false)
+            val specs = batchUris.indices.map {
+                Spec(batchUris[it], mimes[it], sizes[it], targetBytes, targetLabel, toGif = toGif,
+                    // Batch GIFs have no trim screen: take the first MAX_DURATION_MS, as the single-file default does.
+                    trimDurationMs = if (toGif) VideoToGifConverter.MAX_DURATION_MS else 0L,
+                    floors = floors, autoSplit = split)
+            }
             begin(specs, batch = true)
             return START_NOT_STICKY
         }
@@ -120,8 +128,20 @@ class CompressionService : Service() {
         val trimDurationMs: Long = 0L,
         val trimmed: Boolean = false,
         val floors: BitrateMath.Floors = BitrateMath.Floors(),
-        val parts: Int = 1
+        val parts: Int = 1,
+        /** Batch "split long videos": [parts] is worked out per file when its turn comes. */
+        val autoSplit: Boolean = false
     )
+
+    /** Parts [spec]'s video needs to fit its target, as the single-file screen would compute them. */
+    private fun partsFor(spec: Spec): Int {
+        if (!spec.autoSplit || spec.toGif || !spec.mime.startsWith("video")) return spec.parts
+        val probe = VideoCompressor.probe(applicationContext, spec.uri) ?: return 1
+        val sec = queryVideoDurationMs(applicationContext, spec.uri) / 1000.0
+        if (sec <= 0) return 1
+        val minVideo = EncoderFloorStore.floorAt(EncoderFloorStore.load(filesDir), spec.floors.minHeight.coerceAtMost(probe.height))
+        return BitrateMath.partsNeeded(spec.targetBytes, sec, probe.audioBitrate, probe.pixels, probe.height, spec.originalBytes, spec.floors, minVideo)
+    }
 
     private fun begin(specs: List<Spec>, batch: Boolean) {
         createChannel()
@@ -159,6 +179,8 @@ class CompressionService : Service() {
                 if (!batch) {
                     val (done, sourceName) = runOne(first, root) { msg, fraction -> progress(first, msg, fraction) }
                     CompressionBridge.publish(applicationContext, done, sourceName)
+                    // Machine-readable verdict for scripts/device-smoke.sh, which can't read the screen while Squeeze is in the background.
+                    Log.i(RESULT_TAG, "result ${if (done.fitsTarget) "FITS" else "OVER"} ${done.resultFile.length()} bytes")
                     notify(buildNotification(if (done.fitsTarget) "Done — fits under ${first.targetLabel}" else "Done — still over ${first.targetLabel}", 100, indeterminate = false))
                     return@launch
                 }
@@ -169,7 +191,8 @@ class CompressionService : Service() {
                     val name = names[i]
                     try {
                         val dir = File(root, "item$i").apply { mkdirs() }
-                        val (done, sourceName) = runOne(spec, dir) { msg, fraction ->
+                        val sized = spec.copy(parts = withContext(Dispatchers.IO) { partsFor(spec) })
+                        val (done, sourceName) = runOne(sized, dir) { msg, fraction ->
                             progress(spec, "File ${i + 1} of ${specs.size}: $msg", (i + fraction) / specs.size)
                         }
                         results += BatchItem(sourceName, spec.originalBytes, done)
@@ -197,6 +220,7 @@ class CompressionService : Service() {
                     "Not enough memory to process this file. Try a smaller or shorter one."
                 ))
             } catch (e: Exception) {
+                Log.i(RESULT_TAG, "result FAILED ${e.message}")
                 publishState(CompressionState.Failed(e.message ?: "Unknown error during compression"))
             } finally {
                 ExitDiagnostics.jobFinished(applicationContext)
@@ -397,6 +421,9 @@ class CompressionService : Service() {
         private const val EXTRA_TRIM_DURATION = "trim_duration"
         private const val EXTRA_TRIMMED = "trimmed"
         private const val EXTRA_MIN_HEIGHT = "min_height"
+        private const val EXTRA_SPLIT = "split"
+        // Same tag as VideoCompressor's per-pass timing, so one `adb logcat -s SqueezeTiming` shows the whole job.
+        private const val RESULT_TAG = "SqueezeTiming"
         private const val EXTRA_MIN_FPS = "min_fps"
         private const val EXTRA_MIN_AUDIO = "min_audio"
         private const val EXTRA_PARTS = "parts"
@@ -412,10 +439,14 @@ class CompressionService : Service() {
             sizes: List<Long>,
             targetBytes: Long,
             targetLabel: String,
-            floors: BitrateMath.Floors = BitrateMath.Floors()
+            floors: BitrateMath.Floors = BitrateMath.Floors(),
+            toGif: Boolean = false,
+            split: Boolean = false
         ) {
             val intent = Intent(context, CompressionService::class.java)
                 .putParcelableArrayListExtra(EXTRA_BATCH_URIS, ArrayList(uris))
+                .putExtra(EXTRA_TO_GIF, toGif)
+                .putExtra(EXTRA_SPLIT, split)
                 .putExtra(EXTRA_BATCH_MIMES, mimes.toTypedArray())
                 .putExtra(EXTRA_BATCH_SIZES, sizes.toLongArray())
                 .putExtra(EXTRA_TARGET_BYTES, targetBytes)

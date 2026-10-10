@@ -161,11 +161,21 @@ object VideoCompressor {
             }
         }
         var bestSettings = ""
+        // What this phone's encoder really writes at low bitrates, per height (requests under it are clamped).
+        var encoderFloors = EncoderFloorStore.load(context.filesDir)
+        // Settings already encoded to the end: running one again can only give the same size.
+        val tried = mutableSetOf<String>()
 
         for (attempt in 1..maxAttempts) {
             val targetHeight = HEIGHT_LADDER.getOrElse(ladderIndex) { HEIGHT_LADDER.last() }
                 .coerceAtMost(originalHeight)
             val cappedThisPass = capFps
+            val settingsKey = "$targetHeight|$capFps|${bitrate / 1000}|$audioBitrate|$videoMime"
+            if (bestFile != null && settingsKey in tried) {
+                Log.i(TIMING_TAG, "pass $attempt skipped: same settings as an earlier pass")
+                onProgress("Reached minimum bitrate and resolution; can't shrink further.", 1f)
+                break
+            }
             val audioLabel = audioBitrate?.let { ", audio ${it / 1000} kbps" } ?: ""
             val passBase = (attempt - 1).toFloat() / maxAttempts
             onProgress(
@@ -229,6 +239,11 @@ object VideoCompressor {
                 continue
             }
             val passBytes = passFile.length()
+            tried += settingsKey
+            val passAudioBps = audioBitrate ?: sourceAudioBitrate
+            val actualVideoBps = (passBytes * 8 / durationSec - passAudioBps).toLong()
+            EncoderFloorStore.record(context.filesDir, targetHeight, bitrate, actualVideoBps)
+            encoderFloors = EncoderFloorStore.observe(encoderFloors, targetHeight, bitrate, actualVideoBps)
             Log.i(
                 TIMING_TAG,
                 "pass $attempt ${SystemClock.elapsedRealtime() - passStart} ms ${if (videoMime == "video/avc") "avc" else "hevc"} " +
@@ -248,9 +263,12 @@ object VideoCompressor {
 
             if (passBytes in 1..goalBytes) break
 
-            // If the last resolution step barely moved the needle, the bitrate request is
-            // being clamped by the encoder — escalate resolution downscaling instead.
-            if (attempt > 1 && BitrateMath.shrinkStalled(passBytes, previousPassBytes) && ladderIndex < HEIGHT_LADDER.lastIndex) {
+            // A request at or under what the encoder really writes at this height can't shrink the video any further.
+            val atFloor = bitrate <= EncoderFloorStore.floorAt(encoderFloors, targetHeight)
+            // If the last resolution step barely moved the needle, or the encoder is known to clamp here, the bitrate
+            // request is being ignored: escalate resolution downscaling instead.
+            val stalled = attempt > 1 && BitrateMath.shrinkStalled(passBytes, previousPassBytes)
+            if ((stalled || atFloor) && ladderIndex < HEIGHT_LADDER.lastIndex) {
                 ladderIndex++
             }
             previousPassBytes = passBytes
@@ -258,13 +276,16 @@ object VideoCompressor {
             // At the resolution floor the only lever left besides bitrate is the frame rate.
             if (ladderIndex == HEIGHT_LADDER.lastIndex) capFps = true
 
-            if (bitrate <= BitrateMath.MIN_BITRATE && ladderIndex == HEIGHT_LADDER.lastIndex && cappedThisPass) {
-                // Video has nothing left to give; try squeezing the audio harder before giving up.
-                val lowerAudio = BitrateMath.nextLowerAudioBitrate(audioBitrate, sourceAudioBitrate, floors)
+            if (atFloor && ladderIndex == HEIGHT_LADDER.lastIndex && cappedThisPass) {
+                // Video has nothing left to give; squeeze the audio, straight to the step predicted to fit.
+                val lowerAudio = BitrateMath.audioStepAfterOverPass(
+                    audioBitrate, sourceAudioBitrate, passBytes, audioBytes, goalBytes, durationSec, floors
+                )
                 if (lowerAudio != null) {
+                    val newAudioBytes = lowerAudio * durationSec / 8.0
+                    bitrate = BitrateMath.videoBitrateAfterAudioStep(bitrate, passBytes, audioBytes, newAudioBytes, goalBytes)
                     audioBitrate = lowerAudio
-                    audioBytes = lowerAudio * durationSec / 8.0
-                    bitrate = BitrateMath.initialVideoBitrate(targetBytes, durationSec, audioBytes, sourceBytes)
+                    audioBytes = newAudioBytes
                     continue
                 }
                 onProgress("Reached minimum bitrate and resolution; can't shrink further.", 1f)

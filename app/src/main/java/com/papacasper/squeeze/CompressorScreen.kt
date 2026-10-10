@@ -50,7 +50,7 @@ private const val SKIP_COMPRESSION_THRESHOLD_BYTES = 20L * 1024 * 1024
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList(), initialUrl: String? = null) {
+fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList(), initialUrl: String? = null, quickShare: Boolean = false) {
     val context = LocalContext.current
     val vm: CompressorViewModel = viewModel()
     val state = vm.state
@@ -70,6 +70,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
         ActivityResultContracts.RequestPermission()
     ) { }
 
+    LaunchedEffect(quickShare) { if (quickShare) vm.autoCompress = true }
     LaunchedEffect(initialUri) { vm.onInitialUri(initialUri) }
     LaunchedEffect(initialUris) { vm.onInitialUris(initialUris) }
     LaunchedEffect(initialUrl) { vm.onInitialUrl(initialUrl) }
@@ -92,6 +93,50 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
         if (Build.VERSION.SDK_INT >= 33) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    // A target the video can't reach is stopped before it costs minutes of encoding; see [UnreachableDialog].
+    var unreachable by remember { mutableStateOf<UnreachableTarget?>(null) }
+
+    fun requestCompression(file: UiState.FileSelected, targetBytes: Long, targetLabel: String) {
+        val a = if (file.mime.startsWith("video") && vm.partsFor(targetBytes, file.originalBytes) == 1) {
+            vm.assessTarget(targetBytes, file.originalBytes)
+        } else null
+        if (a?.level == BitrateMath.Feasibility.UNREACHABLE) {
+            unreachable = UnreachableTarget(
+                file, targetBytes, targetLabel, a.minBytes,
+                parts = vm.partsToFit(targetBytes, file.originalBytes),
+                lowerHeight = FloorsStore.HEIGHTS.filter { it < vm.floors.minHeight }.maxOrNull()
+            )
+            return
+        }
+        runCompression(file, targetBytes, targetLabel)
+    }
+
+    QuickShareEffect(vm, state, onToast = ::toast, onFile = ::requestCompression) { files, bytes, label ->
+        if (vm.startBatch(files, bytes, label)) notifyPermission()
+    }
+
+    unreachable?.let { u ->
+        UnreachableDialog(
+            u,
+            minHeight = vm.floors.minHeight,
+            onSplit = {
+                unreachable = null
+                vm.splitLongVideos = true
+                runCompression(u.file, u.targetBytes, u.targetLabel)
+            },
+            onLowerFloor = { h ->
+                unreachable = null
+                vm.updateFloors(vm.floors.copy(minHeight = h))
+                requestCompression(u.file, u.targetBytes, u.targetLabel)
+            },
+            onAnyway = {
+                unreachable = null
+                runCompression(u.file, u.targetBytes, u.targetLabel)
+            },
+            onDismiss = { unreachable = null }
+        )
     }
 
     if (showAbout) {
@@ -160,6 +205,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
 
             when (val s = state) {
                 is UiState.Idle -> {
+                    vm.updateAvailable?.let { v -> UpdateBanner(v) { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(UpdateCheck.RELEASES_PAGE))) } }
                     Text(
                         "Pick a file, then choose a target size. The app will re-encode it to fit.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -278,7 +324,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                         estimateLine(vm, s, preset.bytes)
                     }) { preset ->
                         vm.rememberTarget(preset)
-                        runCompression(s, preset.bytes, "${preset.label} (${preset.short})")
+                        requestCompression(s, preset.bytes, "${preset.label} (${preset.short})")
                     }
                     CustomSizeSlider(
                         fraction = vm.customSliderFraction,
@@ -286,7 +332,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                         enabled = true,
                         onCompress = { bytes, label ->
                             vm.rememberTarget(null)
-                            runCompression(s, bytes, label)
+                            requestCompression(s, bytes, label)
                         }
                     )
                 }
@@ -299,7 +345,11 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (s.files.any { it.mime.startsWith("video") }) {
-                        FloorsCard(vm.floors) { vm.updateFloors(it) }
+                        VideoModeToggle(vm.convertToGif) { vm.setGifMode(it) }
+                        if (!vm.convertToGif) {
+                            SplitToggle(vm.splitLongVideos) { vm.splitLongVideos = it }
+                            FloorsCard(vm.floors) { vm.updateFloors(it) }
+                        }
                     }
                     PresetButtons(enabled = true, last = vm.lastPreset) { preset ->
                         vm.rememberTarget(preset)
@@ -320,40 +370,18 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
 
                 is UiState.BatchDone -> {
                     BatchResultCard(s.items, s.targetLabel)
-                    val ready = s.items.mapNotNull { item -> item.done?.let { item to it } }
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                saveOrToast {
-                                    ready.forEach { (_, d) -> SaveUtils.saveToDownloads(context, d.resultFile, d.suggestedName, d.mime) }
-                                    toast("Saved ${ready.size} files to Downloads/Squeeze")
-                                }
-                            },
-                            enabled = ready.isNotEmpty(),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text("  Save all")
+                    BatchDoneActions(
+                        s.items,
+                        onSave = { files -> saveOrToast { files.forEach { (f, name, mime) -> SaveUtils.saveToDownloads(context, f, name, mime) }; toast("Saved ${files.size} files to Downloads/Squeeze") } },
+                        onShare = { files ->
+                            saveOrToast {
+                                val uris = files.map { (f, name, mime) -> SaveUtils.saveToDownloads(context, f, name, mime) }
+                                context.startActivity(
+                                    android.content.Intent.createChooser(SaveUtils.shareMultipleIntent(uris, BatchResult.shareMime(s.items)), "Share compressed files")
+                                )
+                            }
                         }
-                        Button(
-                            onClick = {
-                                saveOrToast {
-                                    val uris = ready.map { (_, d) -> SaveUtils.saveToDownloads(context, d.resultFile, d.suggestedName, d.mime) }
-                                    context.startActivity(
-                                        android.content.Intent.createChooser(
-                                            SaveUtils.shareMultipleIntent(uris, BatchResult.shareMime(s.items)),
-                                            "Share compressed files"
-                                        )
-                                    )
-                                }
-                            },
-                            enabled = ready.isNotEmpty(),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text("  Share all")
-                        }
-                    }
+                    )
                     OutlinedButton(onClick = { vm.reset() }, modifier = Modifier.fillMaxWidth()) {
                         Text("Compress more files")
                     }
@@ -463,22 +491,4 @@ private fun estimateLine(vm: CompressorViewModel, file: UiState.FileSelected, ta
         targetBytes, durationMs / 1000.0, probe.audioBitrate, probe.pixels, probe.height, file.originalBytes, vm.floors
     )
     return "About " + BitrateMath.describe(e, vm.floors)
-}
-
-/** One-line warning for a target the floors (720p, 24 fps, audio steps, 100 kbps) can't meet or can only meet roughly. */
-private fun feasibilityHint(vm: CompressorViewModel, file: UiState.FileSelected, targetBytes: Long): String? {
-    val probe = vm.sourceProbe ?: return null
-    if (vm.convertToGif || !file.mime.startsWith("video")) return null
-    val durationMs = (vm.trimEndMs - vm.trimStartMs).takeIf { it > 0 } ?: vm.videoDurationMs
-    if (durationMs <= 0) return null
-    val parts = vm.partsFor(targetBytes, file.originalBytes)
-    if (parts > 1) return "Will be split into $parts parts, each under this size"
-    val a = BitrateMath.assess(
-        targetBytes, durationMs / 1000.0, probe.audioBitrate, probe.pixels, probe.height, file.originalBytes, vm.floors
-    )
-    return when (a.level) {
-        BitrateMath.Feasibility.UNREACHABLE -> "Can't reach this size — the smallest possible at ${vm.floors.minHeight}p is about ${formatSize(a.minBytes)}"
-        BitrateMath.Feasibility.ROUGH -> "Will fit, but the video will look rough (about ${a.videoBitrate / 1000} kbps)"
-        BitrateMath.Feasibility.OK -> null
-    }
 }

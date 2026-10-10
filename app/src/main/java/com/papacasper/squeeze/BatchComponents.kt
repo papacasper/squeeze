@@ -1,5 +1,8 @@
 package com.papacasper.squeeze
 
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Button
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -96,6 +99,31 @@ internal fun BatchResultCard(items: List<BatchItem>, targetLabel: String) {
                     }
                 }
             }
+        }
+    }
+}
+
+/** Every output file of a finished batch with the name to save it under; split videos contribute all their parts. */
+internal fun batchOutputs(items: List<BatchItem>): List<Triple<java.io.File, String, String>> = items.mapNotNull { it.done }.flatMap { d ->
+    val all = listOf(d.resultFile) + d.extraFiles
+    all.mapIndexed { i, f -> Triple(f, if (all.size == 1) d.suggestedName else BitrateMath.partName(d.suggestedName, i, all.size), d.mime) }
+}
+
+@Composable
+internal fun BatchDoneActions(
+    items: List<BatchItem>,
+    onSave: (List<Triple<java.io.File, String, String>>) -> Unit,
+    onShare: (List<Triple<java.io.File, String, String>>) -> Unit
+) {
+    val files = batchOutputs(items)
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = { onSave(files) }, enabled = files.isNotEmpty(), modifier = Modifier.weight(1f)) {
+            Icon(Icons.Filled.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("  Save all")
+        }
+        Button(onClick = { onShare(files) }, enabled = files.isNotEmpty(), modifier = Modifier.weight(1f)) {
+            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("  Share all")
         }
     }
 }

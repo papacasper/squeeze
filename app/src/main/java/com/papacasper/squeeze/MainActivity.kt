@@ -68,7 +68,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             SqueezeTheme {
                 Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
-                    CompressorScreen(initialUri = sharedUri, initialUris = sharedUris, initialUrl = sharedUrl)
+                    CompressorScreen(
+                        initialUri = sharedUri, initialUris = sharedUris, initialUrl = sharedUrl,
+                        // The "Squeeze to last size" share target is an activity-alias of this activity.
+                        quickShare = intent?.component?.className?.endsWith(".QuickShare") == true
+                    )
                 }
             }
         }

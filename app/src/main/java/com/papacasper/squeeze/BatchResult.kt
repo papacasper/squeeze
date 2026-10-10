@@ -27,6 +27,7 @@ object BatchResult {
                     put("label", d.targetLabel)
                     put("name", d.suggestedName)
                     put("settings", d.settings)
+                    if (d.extraFiles.isNotEmpty()) put("extras", JSONArray(d.extraFiles.map { it.absolutePath }))
                 }
             })
         }
@@ -44,7 +45,8 @@ object BatchResult {
                 fitsTarget = o.optBoolean("fits"),
                 targetLabel = o.optString("label"),
                 suggestedName = o.optString("name"),
-                settings = o.optString("settings")
+                settings = o.optString("settings"),
+                extraFiles = o.optJSONArray("extras")?.let { a -> (0 until a.length()).map { File(a.getString(it)) } }.orEmpty()
             ) else null
             BatchItem(o.optString("source"), original, done, o.optString("error").ifEmpty { null })
         }

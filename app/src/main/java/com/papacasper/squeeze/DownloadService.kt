@@ -55,11 +55,12 @@ class DownloadService : Service() {
         }
 
         val url = intent?.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
-        start(url)
+        val target = intent.getLongExtra(EXTRA_TARGET_BYTES, 0L).takeIf { it > 0 }
+        start(url, target, intent.getIntExtra(EXTRA_MIN_HEIGHT, 0))
         return START_NOT_STICKY
     }
 
-    private fun start(url: String) {
+    private fun start(url: String, targetBytes: Long?, minHeight: Int) {
         createChannel()
         startForeground(NOTIF_ID, buildNotification("Starting download...", 0, indeterminate = true))
         DownloadRepository.state.value = DownloadState.Working("Starting download...", 0f)
@@ -86,9 +87,16 @@ class DownloadService : Service() {
                 if (slideshow != null) {
                     buildSlideshow(slideshow, outDir, ::onProgress)
                 } else withContext(Dispatchers.IO) {
+                    // Short metadata lookup so a small target on a long clip doesn't pull 1080p it would throw away.
+                    val maxHeight = if (targetBytes == null) DownloadFormat.MAX_HEIGHT else {
+                        onProgress("Checking the video...", 0f)
+                        val sec = runCatching { YoutubeDL.getInstance().getInfo(url).duration.toDouble() }.getOrDefault(0.0)
+                        currentCoroutineContext().ensureActive()
+                        DownloadFormat.heightFor(targetBytes, sec, minHeight)
+                    }
                     fun runDownload() {
                         val request = YoutubeDLRequest(url).apply {
-                            addOption("-f", DownloadFormat.selector())
+                            addOption("-f", DownloadFormat.selector(maxHeight))
                             addOption("--merge-output-format", "mp4")
                             addOption("--no-playlist")
                             addOption("-o", File(outDir, "download.%(ext)s").absolutePath)
@@ -106,6 +114,8 @@ class DownloadService : Service() {
                         // A user cancel kills the process, which also lands here, so bail out first if
                         // the job is no longer active.
                         currentCoroutineContext().ensureActive()
+                        // No yt-dlp version will learn a site it never supported; say so now instead of after a retry.
+                        if (e.message.orEmpty().contains("Unsupported URL")) throw e
                         onProgress("Download failed; updating yt-dlp and retrying...", 0f)
                         runCatching {
                             YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel._STABLE)
@@ -133,7 +143,7 @@ class DownloadService : Service() {
             } catch (e: CancellationException) {
                 DownloadRepository.state.value = DownloadState.Idle
             } catch (e: YoutubeDLException) {
-                DownloadRepository.state.value = DownloadState.Failed(e.message ?: "Download failed")
+                DownloadRepository.state.value = DownloadState.Failed(DownloadFormat.friendlyError(e.message))
             } catch (e: Exception) {
                 DownloadRepository.state.value = DownloadState.Failed(e.message ?: "Unknown error during download")
             } finally {
@@ -204,9 +214,13 @@ class DownloadService : Service() {
 
         const val ACTION_CANCEL = "com.papacasper.squeeze.action.CANCEL_DOWNLOAD"
         private const val EXTRA_URL = "url"
+        private const val EXTRA_TARGET_BYTES = "target_bytes"
+        private const val EXTRA_MIN_HEIGHT = "min_height"
 
-        fun start(context: Context, url: String) {
+        /** [targetBytes] is the size the user will most likely pick (their last preset); null downloads up to 1080p. */
+        fun start(context: Context, url: String, targetBytes: Long? = null, minHeight: Int = 0) {
             val intent = Intent(context, DownloadService::class.java).putExtra(EXTRA_URL, url)
+                .putExtra(EXTRA_TARGET_BYTES, targetBytes ?: 0L).putExtra(EXTRA_MIN_HEIGHT, minHeight)
             context.startForegroundService(intent)
         }
 

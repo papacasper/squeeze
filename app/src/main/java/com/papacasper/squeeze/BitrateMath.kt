@@ -149,7 +149,7 @@ object BitrateMath {
 
     /**
      * Pre-encode verdict for [targetBytes]. [minBytes] is the smallest output the floors allow
-     * (MIN_BITRATE video plus the lowest audio step); a target under it can't be met. ROUGH means
+     * (the encoder's real lowest video bitrate plus the lowest audio step); a target under it can't be met. ROUGH means
      * it can be met but only by starving the video at the lowest allowed resolution.
      */
     data class Assessment(val level: Feasibility, val minBytes: Long, val videoBitrate: Long)
@@ -161,11 +161,13 @@ object BitrateMath {
         sourcePixels: Long,
         sourceHeight: Int,
         sourceBytes: Long = Long.MAX_VALUE,
-        floors: Floors = Floors()
+        floors: Floors = Floors(),
+        minVideoBps: Long = MIN_BITRATE
     ): Assessment {
         val dur = durationSec.coerceAtLeast(1.0)
         val lowestAudio = if (sourceAudioBitrate <= 0) 0L else minOf(sourceAudioBitrate, floors.audioSteps().lastOrNull() ?: floors.minAudioBitrate)
-        val minBytes = ((MIN_BITRATE + lowestAudio) * dur / 8.0).toLong()
+        // minVideoBps is what the encoder really writes at the lowest allowed height (see EncoderFloorStore).
+        val minBytes = ((maxOf(MIN_BITRATE, minVideoBps) + lowestAudio) * dur / 8.0).toLong()
         val audioBps = audioReencodeBitrate(sourceAudioBitrate, targetBytes, dur) ?: sourceAudioBitrate
         val videoBps = initialVideoBitrate(targetBytes, dur, audioBps * dur / 8.0, sourceBytes)
         val level = when {
@@ -216,11 +218,12 @@ object BitrateMath {
         sourcePixels: Long,
         sourceHeight: Int,
         sourceBytes: Long = Long.MAX_VALUE,
-        floors: Floors = Floors()
+        floors: Floors = Floors(),
+        minVideoBps: Long = MIN_BITRATE
     ): Int {
         fun level(n: Int) = assess(
             targetBytes, durationSec / n, sourceAudioBitrate, sourcePixels, sourceHeight,
-            if (sourceBytes == Long.MAX_VALUE) sourceBytes else sourceBytes / n, floors
+            if (sourceBytes == Long.MAX_VALUE) sourceBytes else sourceBytes / n, floors, minVideoBps
         ).level
         if (level(1) == Feasibility.OK) return 1
         for (n in 2..MAX_PARTS) {
@@ -249,5 +252,42 @@ object BitrateMath {
     fun shrinkStalled(passBytes: Long, previousPassBytes: Long): Boolean {
         if (previousPassBytes <= 0 || previousPassBytes == Long.MAX_VALUE) return false
         return passBytes.toDouble() / previousPassBytes.toDouble() > STALLED_SHRINK_RATIO
+    }
+
+    /**
+     * Audio to try after a pass with the video already at its floor still came out over [goalBytes]: the highest
+     * step below [current] (null = copying the source's [sourceAudioBitrate]) that the pass's video size plus that
+     * audio is predicted to fit, else the lowest step. Jumping straight there instead of one step per pass saves
+     * whole passes on long clips. Null when there is no lower step or no audio.
+     */
+    fun audioStepAfterOverPass(
+        current: Long?,
+        sourceAudioBitrate: Long,
+        passBytes: Long,
+        passAudioBytes: Double,
+        goalBytes: Long,
+        durationSec: Double,
+        floors: Floors = Floors()
+    ): Long? {
+        if (sourceAudioBitrate <= 0) return null
+        val from = current ?: sourceAudioBitrate
+        val lower = floors.audioSteps().filter { it < from }
+        if (lower.isEmpty()) return null
+        val videoBytes = (passBytes - passAudioBytes).coerceAtLeast(0.0)
+        return lower.firstOrNull { videoBytes + it * durationSec / 8.0 <= goalBytes } ?: lower.last()
+    }
+
+    /**
+     * Video bitrate for the pass after an audio step: what the last pass's video really took, scaled to the room
+     * left beside the new audio. Never resets to a fresh whole-budget estimate, which ignores that the encoder
+     * already overshot (it sent a 720p clip that was over at 100 kbps back up to 194 kbps).
+     */
+    fun videoBitrateAfterAudioStep(
+        bitrate: Long, passBytes: Long, oldAudioBytes: Double, newAudioBytes: Double, goalBytes: Long
+    ): Long {
+        val passVideo = (passBytes - oldAudioBytes).coerceAtLeast(passBytes * 0.1)
+        val room = goalBytes - newAudioBytes
+        if (room <= 0 || passVideo <= 0) return MIN_BITRATE
+        return (bitrate * (room / passVideo) * 0.9).toLong().coerceIn(MIN_BITRATE, MAX_BITRATE)
     }
 }
