@@ -1,0 +1,7 @@
+Squeeze now asks before starting a size it can't reach, and offers to split the video, allow a lower resolution, or try anyway.
+Compression wastes fewer passes: it learns your phone's real minimum bitrate and never repeats the same settings.
+New "Squeeze to last size" share option compresses straight to your last size with no extra taps.
+Batch mode can convert videos to GIF and split long videos into parts.
+URL downloads fetch a lower resolution when the target size is small, so they finish faster.
+yt-dlp updates itself weekly in the background, and unsupported or private links get a clear explanation.
+The start screen tells you when a newer version of Squeeze is out.
