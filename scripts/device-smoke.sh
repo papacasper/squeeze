@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Drives the installed Squeeze app over adb: pick a video (or download one from a URL), choose a size preset,
 # wait for the result.
-# PASS (exit 0) only if the result screen says "Fits under ...". Exit 1 = "Still over"/"Failed"/timeout,
-# exit 2 = couldn't drive the UI. Reads screen text only while Squeeze is foreground; never screenshots.
+# PASS (exit 0) only if the job fits ("result FITS" in the SqueezeTiming log, or "Fits under ..." on screen).
+# Exit 1 = over/failed/timeout/won't-fit dialog, exit 2 = couldn't drive the UI. The verdict comes from logcat, so
+# the phone may be used meanwhile; screen text is read only while Squeeze is foreground; never screenshots.
 #
 #   scripts/device-smoke.sh <video display name> <preset label> [timeout_s]
 #   scripts/device-smoke.sh 20260818_180742.mp4 "Discord Free"
@@ -11,6 +12,8 @@
 #   scripts/device-smoke.sh 20260818_180742.mp4 --hints   # print pre-encode warnings, start nothing
 #   scripts/device-smoke.sh https://youtu.be/jNQXAC9IVRw "Discord Free"   # URL: share it in, Download, then compress
 #   scripts/device-smoke.sh <url> --download-only   # PASS once the downloaded file is selected; no compression
+#   SMOKE_IF_UNREACHABLE="Try anyway" scripts/device-smoke.sh ...   # button to press if the "won't fit" dialog
+#     appears ("Try anyway", "Allow down to 480p", "Split into 2 parts"); unset = report it and exit 1
 set -u
 FILE="${1:?video display name (e.g. clip.mp4) or an http(s) URL}"
 PRESET="${2:?preset label, e.g. \"Discord Free\"}"
@@ -18,8 +21,9 @@ TIMEOUT="${3:-1500}"
 PKG=com.papacasper.squeeze
 XML=/sdcard/squeeze-smoke-ui.xml
 
+LOG="$(mktemp)"
 dump() { adb shell uiautomator dump "$XML" >/dev/null 2>&1; adb shell cat "$XML" 2>/dev/null; }
-cleanup() { adb shell rm -f "$XML" >/dev/null 2>&1; }
+cleanup() { adb shell rm -f "$XML" >/dev/null 2>&1; [ -n "${LOGPID:-}" ] && kill "$LOGPID" 2>/dev/null; rm -f "$LOG"; }
 trap cleanup EXIT
 
 # tap_text <exact text>: taps the centre of the first on-screen node with that text (or containing it
@@ -55,6 +59,8 @@ step() { # step <description> <text> [scroll-tries]
 
 adb get-state >/dev/null 2>&1 || { echo "smoke: no adb device" >&2; exit 2; }
 adb shell am force-stop "$PKG"
+adb logcat -c
+adb logcat -s SqueezeTiming:I > "$LOG" 2>/dev/null & LOGPID=$!
 case "$FILE" in
 http://*|https://*)
   # Share the link in as text (the SEND text/plain path pre-fills the URL field), then press Download.
@@ -105,10 +111,23 @@ for m in re.finditer(r"<node NAF=\"true\"[^>]*?checkable=\"true\"[^>]*?bounds=\"
   [ -n "${c:-}" ] || { echo "smoke: split switch not found" >&2; exit 2; }
 fi
 step "choose preset (starts the run)" "$PRESET" 6
+sleep 2
+if dump | grep -q "probably won"; then  # "won't": uiautomator escapes the apostrophe
+  msg="$(dump | python3 -c 'import re,sys; t=re.findall(r"text=\"([^\"]+)\"", sys.stdin.read()); print(next((x for x in t if x.startswith("At ")), ""))')"
+  echo "smoke: app says it won't fit: $msg"
+  [ -n "${SMOKE_IF_UNREACHABLE:-}" ] || { echo "smoke: FAIL (unreachable; set SMOKE_IF_UNREACHABLE to choose)"; exit 1; }
+  step "won't-fit dialog" "$SMOKE_IF_UNREACHABLE"
+fi
 
-start=$(date +%s); last=""
+start=$(date +%s); last=""; seen=0
 while :; do
   sleep 15
+  n=$(grep -c "SqueezeTiming" "$LOG")
+  [ "$n" -gt "$seen" ] && { grep "SqueezeTiming" "$LOG" | tail -n +"$((seen + 1))" | sed 's/^.*SqueezeTiming: /  log: /'; seen=$n; }
+  case "$(grep -o 'result [A-Z]*' "$LOG" | tail -1)" in
+    "result FITS") echo "smoke: PASS"; exit 0 ;;
+    "result OVER"|"result FAILED") echo "smoke: FAIL"; exit 1 ;;
+  esac
   xml="$(dump)"
   if printf '%s' "$xml" | grep -q "package=\"$PKG\""; then
     now="$(printf '%s' "$xml" | grep -o 'text="\(Encoding[^"]*\|Part [^"]*\|Testing a short[^"]*\|Sample predicts[^"]*\|Made with[^"]*\|Split into[^"]*\|Fits[^"]*\|Still[^"]*\|[0-9.]* [KMG]B  (down[^"]*\|Failed[^"]*\|Reached[^"]*\|Encoder[^"]*\)"' | tr '\n' ' ')"
