@@ -87,6 +87,8 @@ class DownloadService : Service() {
                 if (slideshow != null) {
                     buildSlideshow(slideshow, outDir, ::onProgress)
                 } else withContext(Dispatchers.IO) {
+                    // Fresh from the WebView each time: the user may have logged in or out since the last export.
+                    SiteLogins.export(applicationContext)
                     // Short metadata lookup so a small target on a long clip doesn't pull 1080p it would throw away.
                     val maxHeight = if (targetBytes == null) DownloadFormat.MAX_HEIGHT else {
                         onProgress("Checking the video...", 0f)
@@ -145,6 +147,7 @@ class DownloadService : Service() {
             } catch (e: CancellationException) {
                 DownloadRepository.state.value = DownloadState.Idle
             } catch (e: YoutubeDLException) {
+                android.util.Log.w("SqueezeDownload", "yt-dlp failed: ${e.message}")
                 DownloadRepository.state.value = DownloadState.Failed(DownloadFormat.friendlyError(e.message))
             } catch (e: Exception) {
                 DownloadRepository.state.value = DownloadState.Failed(e.message ?: "Unknown error during download")

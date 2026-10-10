@@ -10,7 +10,10 @@ import java.io.File
  * cookies.txt that every yt-dlp run gets with --cookies. Nothing leaves the phone except to the site itself.
  */
 object SiteLogins {
-    /** [authCookie] is the cookie the site only sets once logged in; [hosts] are exported to yt-dlp. */
+    /**
+     * [authCookie] is the cookie the site only sets once logged in, checked on the first of [hosts] (the one yt-dlp
+     * talks to): a Google sign-in sets it on google.com before redirecting to youtube.com, and yt-dlp needs the latter.
+     */
     enum class Site(val label: String, val loginUrl: String, val hosts: List<String>, val authCookie: String) {
         X("X (Twitter)", "https://x.com/i/flow/login", listOf("x.com", "twitter.com"), "auth_token"),
         YOUTUBE(
@@ -28,8 +31,7 @@ object SiteLogins {
 
     private fun cookieHeader(host: String): String? = CookieManager.getInstance().getCookie("https://$host")
 
-    fun isLoggedIn(site: Site): Boolean =
-        site.hosts.any { host -> parse(cookieHeader(host)).any { it.first == site.authCookie } }
+    fun isLoggedIn(site: Site): Boolean = parse(cookieHeader(site.hosts.first())).any { it.first == site.authCookie }
 
     /** Rewrites cookies.txt from the WebView's cookies for every site. */
     fun export(context: Context) {
@@ -38,7 +40,12 @@ object SiteLogins {
         val lines = Site.entries.flatMap { site ->
             // X's cookies live on x.com but yt-dlp may still call twitter.com, so both get the x.com set.
             val primary = parse(cookieHeader(site.hosts.first()))
-            site.hosts.flatMap { host -> netscapeLines(host, parse(cookieHeader(host)).ifEmpty { primary }, expiry) }
+            site.hosts.flatMap { host ->
+                val cookies = parse(cookieHeader(host)).ifEmpty { primary }
+                // Names only, never values: enough to tell whether a login reached yt-dlp.
+                android.util.Log.i("SqueezeLogin", "$host: ${cookies.joinToString(",") { it.first }}")
+                netscapeLines(host, cookies, expiry)
+            }
         }
         val file = cookiesFile(context)
         if (lines.isEmpty()) file.delete() else file.writeText(NETSCAPE_HEADER + lines.joinToString("\n", postfix = "\n"))
