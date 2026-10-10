@@ -15,3 +15,10 @@ Success = exit 0 and `smoke: PASS`. The verdict is the `result FITS|OVER|FAILED 
 Reference case: the 8K 12:56 clip on Casper's phone, `20260818_180742.mp4`, preset `Discord Free`. Expected: PASS in ~8 min, output ~19 MB (was 36 MB before audio re-encoding).
 
 Notes: the script never screenshots and only reads on-screen text while Squeeze is foreground, because the phone is in daily use. Picking a preset starts the run immediately; there is no separate start button.
+
+## Site logins (age-restricted / sensitive posts)
+
+Needs a human: the account icon → Site logins → Log in to X (or YouTube) on the phone. Then:
+`scripts/device-smoke.sh "https://x.com/freethenipple/status/643211948184596480" --download-only 120` must PASS.
+Logged out, the same command must FAIL with "X only shows this post's video to logged-in accounts".
+YouTube sign-in can be refused by Google inside an app ("This browser or app may not be secure"); that's Google's side, not a bug to chase.

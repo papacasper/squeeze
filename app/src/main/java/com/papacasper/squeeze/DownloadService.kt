@@ -90,7 +90,8 @@ class DownloadService : Service() {
                     // Short metadata lookup so a small target on a long clip doesn't pull 1080p it would throw away.
                     val maxHeight = if (targetBytes == null) DownloadFormat.MAX_HEIGHT else {
                         onProgress("Checking the video...", 0f)
-                        val sec = runCatching { YoutubeDL.getInstance().getInfo(url).duration.toDouble() }.getOrDefault(0.0)
+                        val info = YoutubeDLRequest(url).apply { addCookies() }
+                        val sec = runCatching { YoutubeDL.getInstance().getInfo(info).duration.toDouble() }.getOrDefault(0.0)
                         currentCoroutineContext().ensureActive()
                         DownloadFormat.heightFor(targetBytes, sec, minHeight)
                     }
@@ -99,6 +100,7 @@ class DownloadService : Service() {
                             addOption("-f", DownloadFormat.selector(maxHeight))
                             addOption("--merge-output-format", "mp4")
                             addOption("--no-playlist")
+                            addCookies()
                             addOption("-o", File(outDir, "download.%(ext)s").absolutePath)
                         }
                         YoutubeDL.getInstance().execute(request, PROCESS_ID) { progress, _, line ->
@@ -151,6 +153,11 @@ class DownloadService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    /** Logged-in cookies from [SiteLogins], so age-restricted and sensitive posts download. */
+    private fun YoutubeDLRequest.addCookies() {
+        SiteLogins.cookiesFor(applicationContext)?.let { addOption("--cookies", it.absolutePath) }
     }
 
     private suspend fun buildSlideshow(post: TikTokSlideshow.Post, outDir: File, onProgress: (String, Float) -> Unit) {

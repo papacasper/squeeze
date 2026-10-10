@@ -57,6 +57,11 @@
             </intent-filter>
         </activity>
         <!-- Second share target: compresses straight to the last preset (MainActivity checks for this name). -->
+        <activity
+            android:name=".LoginActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode" />
+
         <activity-alias
             android:name=".QuickShare"
             android:exported="true"

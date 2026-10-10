@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -56,6 +57,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
     val state = vm.state
     var showHistory by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
+    var showAccounts by remember { mutableStateOf(false) }
 
     fun toast(message: String) = android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
     fun saveOrToast(action: () -> Unit) {
@@ -139,13 +141,9 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
         )
     }
 
-    if (showAbout) {
-        AboutDialog(onDismiss = { showAbout = false })
-    }
-
-    if (showHistory) {
-        HistoryDialog(onDismiss = { showHistory = false })
-    }
+    if (showAbout) AboutDialog(onDismiss = { showAbout = false })
+    if (showHistory) HistoryDialog(onDismiss = { showHistory = false })
+    if (showAccounts) AccountsDialog(onDismiss = { showAccounts = false })
 
     // Without this, Android's back gesture/button exits the app entirely from any screen
     // (file selected, working, done, failed) since there's no navigation back stack here.
@@ -169,6 +167,9 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                     }
                     IconButton(onClick = { showHistory = true }) {
                         Icon(Icons.Filled.History, contentDescription = "History", tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                    IconButton(onClick = { showAccounts = true }) {
+                        Icon(Icons.Filled.AccountCircle, contentDescription = "Site logins", tint = MaterialTheme.colorScheme.onPrimary)
                     }
                     IconButton(onClick = { showAbout = true }) {
                         Icon(Icons.Filled.Info, contentDescription = "About and licenses", tint = MaterialTheme.colorScheme.onPrimary)

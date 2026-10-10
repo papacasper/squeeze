@@ -38,9 +38,9 @@ object DownloadFormat {
             "unsupported url" in lower -> "Squeeze can't download from this site. Save the video on your phone, then pick it with Choose file."
             // X hides sensitive (age-restricted) media from logged-out viewers and yt-dlp then reports no video.
             NO_TWEET_VIDEO in lower ->
-                "X only shows this post's video to logged-in accounts (it's marked sensitive), or the post has no video. Squeeze can't log in to X, so save the video another way and pick it with Choose file."
+                "X only shows this post's video to logged-in accounts (it's marked sensitive), or the post has no video. Log in to X under Site logins (the account icon at the top) and try again."
             "private" in lower || "login" in lower || "sign in" in lower || "cookies" in lower ->
-                "This video needs an account to watch (private, age-restricted or members-only), so Squeeze can't download it."
+                "This video needs an account to watch (private, age-restricted or members-only). If your account can see it, log in under Site logins (the account icon at the top) and try again."
             "not available" in lower || "unavailable" in lower || "has been removed" in lower || "404" in lower ->
                 "That video isn't available anymore, or not in your country."
             "unable to resolve" in lower || "network is unreachable" in lower || "timed out" in lower ->
