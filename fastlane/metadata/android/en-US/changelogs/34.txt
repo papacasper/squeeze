@@ -1,0 +1,1 @@
+URL downloads that fail with a temporary error (such as YouTube's random 403) now retry automatically instead of failing.
