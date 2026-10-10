@@ -20,5 +20,7 @@ Notes: the script never screenshots and only reads on-screen text while Squeeze 
 
 Needs a human: the account icon → Site logins → Log in to X (or YouTube) on the phone. Then:
 `scripts/device-smoke.sh "https://x.com/freethenipple/status/643211948184596480" --download-only 120` must PASS.
-Logged out, the same command must FAIL with "X only shows this post's video to logged-in accounts".
+YouTube: `scripts/device-smoke.sh "https://www.youtube.com/watch?v=Tq92D6wQ1mg" --download-only 400` must PASS (logged out it says "Sign in to confirm your age").
+If a login check fails, `adb logcat -d | rg "SqueezeLogin|SqueezeDownload"` shows the cookie names exported per host and yt-dlp's raw error; an empty host line means that site's login never completed.
+Logged out, the X command must FAIL with "X only shows this post's video to logged-in accounts".
 YouTube sign-in can be refused by Google inside an app ("This browser or app may not be secure"); that's Google's side, not a bug to chase.
