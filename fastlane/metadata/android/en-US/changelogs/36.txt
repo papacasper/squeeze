@@ -1,0 +1,4 @@
+New Site logins (account icon at the top): log in to X or YouTube so sensitive X posts and age-restricted YouTube videos download.
+Sensitive X posts that need a login now say so right away instead of failing with a confusing error.
+Download errors are titled "Download failed" instead of "Compression failed".
+The About screen shows which yt-dlp version Squeeze is using.
