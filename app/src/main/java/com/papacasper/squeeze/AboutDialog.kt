@@ -25,6 +25,8 @@ fun AboutDialog(onDismiss: () -> Unit) {
     val version = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
     }
+    // Which yt-dlp the app has updated itself to; the first thing to check when a site stops downloading.
+    val ytDlp = remember { runCatching { com.yausername.youtubedl_android.YoutubeDL.getInstance().version(context) }.getOrNull() }
     fun open(url: String) = context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
 
     AlertDialog(
@@ -34,6 +36,7 @@ fun AboutDialog(onDismiss: () -> Unit) {
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Version $version", style = MaterialTheme.typography.bodyMedium)
+                ytDlp?.let { Text("yt-dlp $it", style = MaterialTheme.typography.bodySmall) }
                 Text(
                     "Free software under the ${Licenses.APP_LICENSE} license.",
                     style = MaterialTheme.typography.bodyMedium

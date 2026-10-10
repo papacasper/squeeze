@@ -38,6 +38,14 @@ class DownloadFormatTest {
         assertTrue(DownloadFormat.friendlyError("ERROR: [instagram] x: Requested content is not available").contains("isn't available"))
     }
 
+    @Test fun sensitiveTweetExplainsLoginAndSkipsRetry() {
+        val raw = "ERROR: [twitter] 643211948184596480: No video could be found in this tweet"
+        assertTrue(DownloadFormat.friendlyError(raw).startsWith("X only shows this post's video to logged-in accounts"))
+        assertTrue(DownloadFormat.isPermanent(raw))
+        assertTrue(DownloadFormat.isPermanent("ERROR: Unsupported URL: https://example.com/page"))
+        assertTrue(!DownloadFormat.isPermanent("ERROR: [youtube] abc: HTTP Error 403: Forbidden"))
+    }
+
     @Test fun ytDlpUpdateIsWeekly() {
         assertTrue(YtDlpUpdater.isDue(0, 1_000))
         assertTrue(!YtDlpUpdater.isDue(1_000, 1_000 + YtDlpUpdater.INTERVAL_MS - 1))

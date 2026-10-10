@@ -27,7 +27,7 @@ object YtDlpUpdater {
             runCatching { YoutubeDL.getInstance().updateYoutubeDL(context, YoutubeDL.UpdateChannel._STABLE) }
                 .onSuccess {
                     prefs.edit().putLong(KEY_LAST, now).apply()
-                    Log.i("SqueezeUpdate", "yt-dlp update check: $it")
+                    Log.i("SqueezeUpdate", "yt-dlp update check: $it, now ${YoutubeDL.getInstance().version(context)}")
                 }
                 .onFailure { Log.w("SqueezeUpdate", "yt-dlp update failed", it) }
         }

@@ -268,7 +268,7 @@ fun DownloadingCard(message: String, progress: Float, onCancel: () -> Unit) {
 }
 
 @Composable
-fun ErrorCard(message: String) {
+fun ErrorCard(message: String, title: String = "Compression failed") {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFC62828).copy(alpha = 0.10f))
@@ -276,7 +276,7 @@ fun ErrorCard(message: String) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Error, contentDescription = null, tint = Color(0xFFC62828))
-                Text("Compression failed", style = MaterialTheme.typography.titleMedium, color = Color(0xFFC62828))
+                Text(title, style = MaterialTheme.typography.titleMedium, color = Color(0xFFC62828))
             }
             Text(message, style = MaterialTheme.typography.bodyMedium)
         }

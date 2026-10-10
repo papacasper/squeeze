@@ -37,7 +37,7 @@ internal sealed class UiState {
         val extraFiles: List<File> = emptyList(),
         val settings: String = ""
     ) : UiState()
-    data class Failed(val message: String) : UiState()
+    data class Failed(val message: String, val title: String = "Compression failed") : UiState()
     /** Several files picked or shared at once, waiting for a target size. */
     data class BatchSelected(val files: List<BatchFile>, val skipped: Int) : UiState()
     data class BatchDone(val items: List<BatchItem>, val targetLabel: String) : UiState()
@@ -165,7 +165,7 @@ internal class CompressorViewModel(application: Application) : AndroidViewModel(
                         DownloadRepository.state.compareAndSet(s, DownloadState.Idle)
                     }
                     is DownloadState.Failed -> {
-                        state = UiState.Failed(s.message)
+                        state = UiState.Failed(s.message, title = "Download failed")
                         DownloadRepository.state.compareAndSet(s, DownloadState.Idle)
                     }
                     DownloadState.Idle -> if (state is UiState.Downloading) state = UiState.Idle

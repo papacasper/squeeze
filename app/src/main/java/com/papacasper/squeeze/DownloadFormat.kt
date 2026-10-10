@@ -36,6 +36,9 @@ object DownloadFormat {
         val lower = msg.lowercase()
         return when {
             "unsupported url" in lower -> "Squeeze can't download from this site. Save the video on your phone, then pick it with Choose file."
+            // X hides sensitive (age-restricted) media from logged-out viewers and yt-dlp then reports no video.
+            NO_TWEET_VIDEO in lower ->
+                "X only shows this post's video to logged-in accounts (it's marked sensitive), or the post has no video. Squeeze can't log in to X, so save the video another way and pick it with Choose file."
             "private" in lower || "login" in lower || "sign in" in lower || "cookies" in lower ->
                 "This video needs an account to watch (private, age-restricted or members-only), so Squeeze can't download it."
             "not available" in lower || "unavailable" in lower || "has been removed" in lower || "404" in lower ->
@@ -46,6 +49,11 @@ object DownloadFormat {
             else -> msg.removePrefix("ERROR:").trim().replace(Regex("^\\[[^]]+] [^:]+: "), "")
         }
     }
+
+    /** Errors no yt-dlp update can fix, so a download fails at once instead of updating and retrying. */
+    fun isPermanent(raw: String?): Boolean = raw.orEmpty().lowercase().let { "unsupported url" in it || NO_TWEET_VIDEO in it }
+
+    private const val NO_TWEET_VIDEO = "no video could be found in this tweet"
 
     /** Mime type from a downloaded file's name. Unknown extensions are assumed to be video, as before. */
     fun mimeFor(fileName: String): String {

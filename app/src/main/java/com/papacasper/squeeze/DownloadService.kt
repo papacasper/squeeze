@@ -114,8 +114,8 @@ class DownloadService : Service() {
                         // A user cancel kills the process, which also lands here, so bail out first if
                         // the job is no longer active.
                         currentCoroutineContext().ensureActive()
-                        // No yt-dlp version will learn a site it never supported; say so now instead of after a retry.
-                        if (e.message.orEmpty().contains("Unsupported URL")) throw e
+                        // No yt-dlp version learns a site it never supported or logs in to X; say so now, not after a retry.
+                        if (DownloadFormat.isPermanent(e.message)) throw e
                         onProgress("Download failed; updating yt-dlp and retrying...", 0f)
                         runCatching {
                             YoutubeDL.getInstance().updateYoutubeDL(applicationContext, YoutubeDL.UpdateChannel._STABLE)

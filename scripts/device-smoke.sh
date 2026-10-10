@@ -76,8 +76,8 @@ http://*|https://*)
     [ "$now" != "$last" ] && { echo "$(date +%T) $now"; last="$now"; }
     case "$now" in
       *Selected\ file*) echo "smoke: download done in $(( $(date +%s) - start ))s"; break ;;
-      *Compression\ failed*)
-        printf '%s' "$xml" | python3 -c 'import re,sys; t=re.findall(r"text=\"([^\"]+)\"", sys.stdin.read()); i=t.index("Compression failed"); print("smoke: download FAIL:", t[i+1] if i+1 < len(t) else "")'
+      *Compression\ failed*|*'"Download failed"'*)
+        printf '%s' "$xml" | python3 -c 'import re,sys; t=re.findall(r"text=\"([^\"]+)\"", sys.stdin.read()); i=next(i for i,x in enumerate(t) if x in ("Download failed","Compression failed")); print("smoke: download FAIL:", t[i+1] if i+1 < len(t) else "")'
         exit 1 ;;
     esac
     [ $(( $(date +%s) - start )) -gt "$TIMEOUT" ] && { echo "smoke: FAIL (download timeout ${TIMEOUT}s)"; exit 1; }

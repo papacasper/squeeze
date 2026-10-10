@@ -467,7 +467,7 @@ fun CompressorScreen(initialUri: Uri? = null, initialUris: List<Uri> = emptyList
                 }
 
                 is UiState.Failed -> {
-                    ErrorCard(message = s.message)
+                    ErrorCard(message = s.message, title = s.title)
                     OutlinedButton(
                         onClick = { vm.reset() },
                         modifier = Modifier.fillMaxWidth()
